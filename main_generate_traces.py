@@ -14,12 +14,16 @@ def extract_answer_gsm8k(text: str) -> str:
         return answer_part
     return ""
 
-def get_question(item) -> str:
-    if "Problem" in item: # MathQA
+def get_question(item, dataset_name: str) -> str:
+    dataset_name = dataset_name.lower()
+    if "Problem" in item and "math_qa" in dataset_name: 
+        options = item.get("options", "")
+        return f"{item['Problem']}\nOptions: {options}"
+    if "math_qa" in dataset_name and "Problem" in item:
         return item["Problem"]
     if "Body" in item and "Question" in item: # SVAMP
         return f"{item['Body']} {item['Question']}"
-    if "question" in item: # GSM8K, StrategyQA
+    if "question" in item: # GSM8K, StrategyQA, HotpotQA
         return item["question"]
     return str(item)
 
@@ -122,19 +126,50 @@ def generate_traces_for_dataset(
         
     results = []
     
-    # Adjust prompt depending on dataset
-    if 'strategy' in dataset_name.lower() or 'hotpot' in dataset_name.lower():
+    dataset_lower = dataset_name.lower()
+    
+    # Few-shot prompt templates tailored to each dataset
+    if 'math_qa' in dataset_lower:
         prompt_template = (
-            "Read the following question and answer it step-by-step.\n"
-            "State your final answer clearly.\n"
+            "Solve the following multiple-choice math problem step-by-step.\n"
+            "State your final numerical answer clearly, and explicitly mention the correct option letter.\n"
+            "After stating the answer, briefly double-check your work to ensure it is correct.\n\n"
+            "Example:\n"
+            "Problem: a shopkeeper sells an article at a loss of 10 % . if he had sold it for rs . 45 more , he would have gained 5 % . find the cost price of the article ?\n"
+            "Options: a ) 250 , b ) 300 , c ) 350 , d ) 400 , e ) 450\n"
+            "Solution: Let the cost price be x.\n"
+            "Loss = 10% of x = 0.1x. Selling price = x - 0.1x = 0.9x.\n"
+            "If sold for 45 more, new selling price = 0.9x + 45.\n"
+            "New gain = 5% of x = 0.05x. New selling price = x + 0.05x = 1.05x.\n"
+            "Therefore, 0.9x + 45 = 1.05x.\n"
+            "0.15x = 45 => x = 45 / 0.15 = 300.\n"
+            "The cost price is 300. The correct option is b.\n"
+            "Double-check: 10% loss on 300 is 270. 270 + 45 = 315. 315 is 105% of 300. Thus, 5% gain. Correct.\n\n"
+            "Problem: {question}\n\nSolution:\n"
+        )
+    elif 'strategy' in dataset_lower or 'hotpot' in dataset_lower:
+        prompt_template = (
+            "Read the following logical question and answer it step-by-step.\n"
+            "State your final answer clearly as either 'Yes' or 'No', or the exact target entity.\n"
             "After stating the answer, briefly double-check your logic to ensure it is correct.\n\n"
+            "Example:\n"
+            "Question: Do hamsters provide food for any animals?\n"
+            "Solution: Hamsters are prey animals. Many predators, such as hawks, owls, and snakes, hunt and eat hamsters in the wild.\n"
+            "Therefore, hamsters provide food for other animals. The answer is Yes.\n"
+            "Double-check: Prey animals provide food for predators. Hamsters are prey animals. Thus, Yes is correct.\n\n"
             "Question: {question}\n\nSolution:\n"
         )
-    else:
+    else: # GSM8K, SVAMP
         prompt_template = (
             "Solve the following math problem step-by-step.\n"
             "State your final numerical answer clearly.\n"
             "After stating the answer, briefly double-check your work to ensure it is correct.\n\n"
+            "Example:\n"
+            "Problem: Natalia sold clips to 48 of her friends in April, and then she sold half as many clips in May. How many clips did Natalia sell altogether in April and May?\n"
+            "Solution: Natalia sold 48 clips in April. In May, she sold half as many, which is 48 / 2 = 24 clips.\n"
+            "Altogether, she sold 48 + 24 = 72 clips.\n"
+            "The final answer is 72.\n"
+            "Double-check: 48 (April) + 24 (May) = 72. Correct.\n\n"
             "Problem: {question}\n\nSolution:\n"
         )
     
@@ -142,7 +177,7 @@ def generate_traces_for_dataset(
     for idx, item in enumerate(tqdm(dataset)):
         real_idx = start_idx + idx 
         
-        question = get_question(item)
+        question = get_question(item, dataset_name)
         true_answer_str = get_true_answer(item, dataset_name)
         
         prompt = prompt_template.format(question=question)
@@ -152,7 +187,7 @@ def generate_traces_for_dataset(
         current_generation = ""
         steps_data = [] # Stores what was generated at each step
         
-        max_steps = 40
+        max_steps = 60
         already_solved = False
         solved_at_step = -1
         
@@ -160,7 +195,7 @@ def generate_traces_for_dataset(
             step_info = model_wrapper.generate_step(
                 prompt=prompt,
                 current_generation=current_generation,
-                step_tokens_limit=15
+                step_tokens_limit=20
             )
             
             step_text = step_info["step_text"]
