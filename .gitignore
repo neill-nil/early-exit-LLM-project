@@ -1,0 +1,36 @@
+# Virtual Environments
+venv/
+env/
+ENV/
+.env/
+.venv/
+nlp/
+nlp_env/
+
+# Python Cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Data and Models
+data/
+*.ckpt
+*.safetensors
+*.pt
+*.pth
+*.h5
+*.bin
+
+# Logs and Outputs
+*.log
+traces/
+
+# Jupyter Notebooks
+.ipynb_checkpoints/
+
+# IDE and OS Files
+.vscode/
+.idea/
+.DS_Store
+.gemini/
