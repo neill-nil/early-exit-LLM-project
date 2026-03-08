@@ -27,6 +27,24 @@ class EarlyExitPipeline:
         self.controller.load_state_dict(torch.load(controller_path, map_location=self.device))
         self.controller.eval()
         
+    def has_clear_answer(self, text, prompt):
+        """Checks if the generation already contains a clearly formatted final answer."""
+        text_lower = text.lower()
+        prompt_lower = prompt.lower()
+        
+        if 'multiple-choice' in prompt_lower or 'options:' in prompt_lower:
+            if re.search(r'\b(?:option|answer)(?:\s+is)?\s+([a-e])\b', text_lower):
+                return True
+        elif "'yes' or 'no'" in prompt_lower or 'logical question' in prompt_lower:
+            if re.search(r'\b(yes|no|true|false)\b', text_lower):
+                return True
+                
+        # Universal checks
+        if re.search(r'\\boxed\{([^\}]+)\}', text) or ("the final answer is" in text_lower):
+            return True
+            
+        return False
+        
     def extract_final_answer(self, text, prompt):
         """
         Gracefully extracts the FINAL answer from a truncated reasoning trace.
@@ -50,8 +68,28 @@ class EarlyExitPipeline:
                 return matches[-1] # Grabs the last logical boolean derived
             return ""
                 
-        # Standard Math / Default Fallback
-        # We grab the *last* number generated, as our few-shot prompt concludes with "The final answer is X"
+        # Standard Math
+        # Priority 1: Qwen often natively outputs \boxed{number}
+        boxed_matches = re.findall(r'\\boxed\{([^\}]+)\}', text)
+        if boxed_matches:
+            boxed_val = boxed_matches[-1]
+            nums_in_box = re.findall(r'-?\d+(?:\.\d+)?', boxed_val)
+            if nums_in_box: return nums_in_box[-1]
+            return boxed_val
+
+        # Priority 2: Look for our explicit prompt ending string
+        if "the final answer is" in text_lower:
+            ans_part = text_lower.split("the final answer is")[-1]
+            nums = re.findall(r'-?\d+(?:\.\d+)?', ans_part)
+            if nums: return nums[0]
+            
+        # Priority 3: Extract the last number BEFORE the "double-check" phase starts
+        if "double-check:" in text_lower:
+            main_text = text_lower.split("double-check:")[0]
+            numbers = re.findall(r'-?\d+(?:\.\d+)?', main_text)
+            if numbers: return numbers[-1]
+
+        # Priority 4: Default Fallback to the absolute last number generated
         numbers = re.findall(r'-?\d+(?:\.\d+)?', text)
         if numbers:
             return numbers[-1]
@@ -77,25 +115,34 @@ class EarlyExitPipeline:
             
             # --- Early Exit Check ---
             with torch.no_grad():
-                # 1. Embed text
+                # 1. Embed text (ensure it's 2D: [1, 384])
                 emb = self.embedder.encode(current_generation, convert_to_tensor=True, device=self.device)
+                if emb.dim() == 1:
+                    emb = emb.unsqueeze(0)
                 
-                # 2. Normalize scalars
-                scalars = torch.tensor([step_idx, total_tokens], dtype=torch.float32, device=self.device)
+                # 2. Normalize scalars (make them 2D: [1, 2])
+                # We use the token count *for this step*, NOT the accumulating total, because that is what the MLP was trained on in prepare_features.py
+                current_step_tokens = step_info["num_tokens"]
+                scalars = torch.tensor([[step_idx, current_step_tokens]], dtype=torch.float32, device=self.device)
                 scalars_norm = (scalars - self.mean_scalars) / self.std_scalars
                 
-                # 3. Concatenate and predict
-                x = torch.cat([emb, scalars_norm]).unsqueeze(0) # Batch size 1
+                # 3. Concatenate (Result: [1, 386])
+                x = torch.cat([emb, scalars_norm], dim=1)
+                
+                # Predict
                 prob = self.controller(x).item()
                 
             print(f"  [Step {step_idx} | Tokens: {total_tokens}] Controller Confidence: {prob*100:.2f}%")
             
             # If our MLP is X% confident the answer is correct/present, we STOP the LLM.
             if prob >= self.threshold:
-                print(f"  >>> EARLY EXIT TRIGGERED (Confidence {prob*100:.2f}% >= Threshold {self.threshold*100:.2f}%)")
-                early_exit_triggered = True
-                stopped_at_step = step_idx
-                break
+                if self.has_clear_answer(current_generation, prompt):
+                    print(f"  >>> EARLY EXIT TRIGGERED (Confidence {prob*100:.2f}% >= Threshold {self.threshold*100:.2f}%)")
+                    early_exit_triggered = True
+                    stopped_at_step = step_idx
+                    break
+                else:
+                    print(f"  >>> Controller confident ({prob*100:.2f}%), but answer not fully printed. Running another step...")
                 
             if step_info["is_eos"]:
                 break
@@ -111,4 +158,11 @@ class EarlyExitPipeline:
         }
 
 if __name__ == "__main__":
+    import argparse
+    parser = argparse.ArgumentParser(description="Test Early Exit Pipeline")
+    parser.add_argument("--controller", type=str, default="models/early_exit_controller.pt", help="Path to early_exit_controller.pt")
+    parser.add_argument("--scaler", type=str, default="models/scaler.pt", help="Path to scaler.pt")
+    args = parser.parse_args()
+    
     print("Successfully loaded Inference Pipeline. Import this in Kaggle to test!")
+    print(f"When initializing EarlyExitPipeline, use controller_path='{args.controller}' and scaler_path='{args.scaler}'")

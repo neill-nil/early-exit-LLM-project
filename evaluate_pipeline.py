@@ -4,7 +4,7 @@ from tqdm import tqdm
 from datasets import load_dataset
 from models.llm_wrapper import HuggingFaceLLMWrapper
 from early_exit_inference import EarlyExitPipeline
-from main_generate_traces import get_question, get_true_answer
+from main_generate_traces import get_question, get_true_answer, check_intermediate_correctness
 
 def get_few_shot_prompt(dataset_name):
     dataset_lower = dataset_name.lower()
@@ -55,10 +55,23 @@ def get_few_shot_prompt(dataset_name):
 def evaluate_on_dataset(pipeline, dataset_name, split="test", num_samples=20):
     print(f"\nEvaluating pipeline on {dataset_name} ({split} set)...")
     
-    if dataset_name == "gsm8k":
-        dataset = load_dataset(dataset_name, "main")[split]
-    else:
-        dataset = load_dataset(dataset_name)[split]
+    try:
+        # Check if local data exists first, exactly like traces generation
+        local_path = f"data/{dataset_name.split('/')[-1]}"
+        if os.path.exists(local_path):
+            from datasets import load_from_disk
+            dataset = load_from_disk(local_path)[split]
+        else:
+            if dataset_name == "gsm8k":
+                dataset = load_dataset(dataset_name, "main", trust_remote_code=True)[split]
+            elif dataset_name == "math_qa":
+                dataset = load_dataset(dataset_name)[split]
+            else:
+                dataset = load_dataset(dataset_name, trust_remote_code=True)[split]
+    except Exception as e:
+        print(f"Hugging Face fetch failed ({e}). Attempting offline load from data/{dataset_name.split('/')[-1]}...")
+        from datasets import load_from_disk
+        dataset = load_from_disk(f"data/{dataset_name.split('/')[-1]}")[split]
         
     dataset = dataset.select(range(min(num_samples, len(dataset))))
     prompt_template = get_few_shot_prompt(dataset_name)
@@ -73,24 +86,32 @@ def evaluate_on_dataset(pipeline, dataset_name, split="test", num_samples=20):
         true_ans = get_true_answer(item, dataset_name).strip().lower()
         prompt = prompt_template.format(question=question)
         
-        # Run Early Exit Pipeline
-        # (Assuming max conservative baseline represents generating all 60 steps)
         MAX_STEPS = 60
         STEP_TOKENS = 20
-        baseline_tokens = MAX_STEPS * STEP_TOKENS 
         
+        # We assume a dataset-specific average baseline derived from the unconstrained training traces
+        if "gsm8k" in dataset_name.lower():
+            baseline_tokens = 386.0  # Empirical average from GSM8K traces
+        elif "math_qa" in dataset_name.lower():
+            baseline_tokens = 500.0  # Empirical average from MathQA traces
+        else:
+            baseline_tokens = 600.0  # Fallback
+            
         exit_result = pipeline.generate_with_early_exit(prompt, max_steps=MAX_STEPS, step_tokens=STEP_TOKENS)
         
         actual_tokens_used = exit_result["total_tokens"]
         extracted_ans = exit_result["extracted_answer"].strip().lower()
         
-        # For simplicity, check if the exact true answer string is inside the extracted answer string
-        # or vice-versa, since math_qa might just say 'b' while true ans is 'b'.
-        is_correct = (extracted_ans == true_ans) or (extracted_ans in true_ans) or (true_ans in extracted_ans)
-        if true_ans == "": is_correct = False
+        # Check correctness
+        if true_ans == "": 
+            is_correct = False
+        elif extracted_ans == true_ans:
+            is_correct = True # Exact match is always true 
+        else:
+            # Use the robust regex boundary matcher from the generation script to avoid "60" matching "600"
+            is_correct = check_intermediate_correctness(extracted_ans, true_ans, dataset_name)
             
-        if is_correct:
-            correct_extractions += 1
+        if is_correct: correct_extractions += 1
             
         total_baseline_tokens += baseline_tokens
         total_exit_tokens += actual_tokens_used
@@ -102,26 +123,41 @@ def evaluate_on_dataset(pipeline, dataset_name, split="test", num_samples=20):
             "is_correct": is_correct,
             "early_exit": exit_result["early_exit_triggered"],
             "tokens_used": actual_tokens_used,
-            "tokens_saved": baseline_tokens - actual_tokens_used
+            "true_baseline_tokens": baseline_tokens,
+            "tokens_saved": baseline_tokens - actual_tokens_used,
+            "full_generation": exit_result["generation"]
         })
         
     avg_accuracy = correct_extractions / num_samples
     token_savings_pct = ((total_baseline_tokens - total_exit_tokens) / total_baseline_tokens) * 100
     
+    # Save detailed evaluation results to disk
+    os.makedirs("results", exist_ok=True)
+    output_filename = f"results/eval_results_{dataset_name.split('/')[-1]}_{split}.json"
+    with open(output_filename, "w") as f:
+        json.dump(results, f, indent=4)
+        
     print("-" * 50)
     print(f"Dataset: {dataset_name.upper()}")
     print(f"Final Accuracy: {avg_accuracy*100:.2f}%")
-    print(f"Total Tokens Saved vs Baseline (1200): {token_savings_pct:.2f}%")
-    print(f"Average Tokens Generated: {total_exit_tokens / num_samples:.1f}")
+    print(f"Total Tokens Saved vs Historical Trace Average ({total_baseline_tokens / num_samples:.1f}): {token_savings_pct:.2f}%")
+    print(f"Average Tokens Generated Before Exit: {total_exit_tokens / num_samples:.1f}")
+    print(f"Detailed logs saved to: {output_filename}")
     print("-" * 50)
     
     return results
 
 if __name__ == "__main__":
+    import argparse
+    parser = argparse.ArgumentParser(description="Evaluate Early Exit Pipeline")
+    parser.add_argument("--controller", type=str, default="models/early_exit_controller.pt", help="Path to early_exit_controller.pt")
+    parser.add_argument("--scaler", type=str, default="models/scaler.pt", help="Path to scaler.pt")
+    args = parser.parse_args()
+
     print("Initializing Qwen Model and Pipeline...")
     wrapper = HuggingFaceLLMWrapper(model_name="Qwen/Qwen2.5-Math-7B-Instruct")
     # You can tweak the confidence threshold. Higher = safer but less token savings.
-    pipeline = EarlyExitPipeline(wrapper, threshold=0.85)
+    pipeline = EarlyExitPipeline(wrapper, controller_path=args.controller, scaler_path=args.scaler, threshold=0.85)
     
     evaluate_on_dataset(pipeline, "gsm8k", split="test", num_samples=25)
     evaluate_on_dataset(pipeline, "math_qa", split="test", num_samples=25)
