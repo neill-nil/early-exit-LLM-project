@@ -64,16 +64,24 @@ def evaluate_on_dataset(pipeline, dataset_name, split="test", num_samples=20):
         else:
             if dataset_name == "gsm8k":
                 dataset = load_dataset(dataset_name, "main", trust_remote_code=True)[split]
-            elif dataset_name == "math_qa":
-                dataset = load_dataset(dataset_name)[split]
             else:
-                dataset = load_dataset(dataset_name, trust_remote_code=True)[split]
+                dataset = load_dataset(dataset_name)[split]
+                
+        if dataset_name == "math_qa":
+            # Taking samples 300 to 300+num_samples from the train split to avoid training overlap
+            dataset = dataset.select(range(300, 300 + num_samples))
+        else:
+            dataset = dataset.select(range(min(num_samples, len(dataset))))
+            
     except Exception as e:
         print(f"Hugging Face fetch failed ({e}). Attempting offline load from data/{dataset_name.split('/')[-1]}...")
         from datasets import load_from_disk
         dataset = load_from_disk(f"data/{dataset_name.split('/')[-1]}")[split]
         
-    dataset = dataset.select(range(min(num_samples, len(dataset))))
+        if dataset_name == "math_qa":
+            dataset = dataset.select(range(300, 300 + num_samples))
+        else:
+            dataset = dataset.select(range(min(num_samples, len(dataset))))
     prompt_template = get_few_shot_prompt(dataset_name)
     
     results = []
@@ -152,6 +160,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Evaluate Early Exit Pipeline")
     parser.add_argument("--controller", type=str, default="models/early_exit_controller.pt", help="Path to early_exit_controller.pt")
     parser.add_argument("--scaler", type=str, default="models/scaler.pt", help="Path to scaler.pt")
+    parser.add_argument("--dataset", type=str, default="all", choices=["all", "gsm8k", "math_qa"], help="Which dataset to evaluate. Options: all, gsm8k, math_qa")
     args = parser.parse_args()
 
     print("Initializing Qwen Model and Pipeline...")
@@ -159,5 +168,9 @@ if __name__ == "__main__":
     # You can tweak the confidence threshold. Higher = safer but less token savings.
     pipeline = EarlyExitPipeline(wrapper, controller_path=args.controller, scaler_path=args.scaler, threshold=0.85)
     
-    evaluate_on_dataset(pipeline, "gsm8k", split="test", num_samples=25)
-    evaluate_on_dataset(pipeline, "math_qa", split="test", num_samples=25)
+    if args.dataset in ["all", "gsm8k"]:
+        evaluate_on_dataset(pipeline, "gsm8k", split="test", num_samples=25)
+    
+    if args.dataset in ["all", "math_qa"]:
+        # User only has math_qa train split uploaded to Kaggle local storage, so we evaluate strictly on unseen "train" slice
+        evaluate_on_dataset(pipeline, "math_qa", split="train", num_samples=25)
