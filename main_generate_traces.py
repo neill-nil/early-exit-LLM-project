@@ -71,6 +71,11 @@ def check_intermediate_correctness_llm(text: str, true_answer: str, question: st
     Uses a locally hosted base LLM to carefully read the reasoning trace and decide 
     if the student has actually stated the final answer yet.
     """
+    # Fast path: if the exact answer string isn't even in the text, 
+    # there is zero percent chance they have stated it as the final conclusion.
+    if str(true_answer).strip() not in text:
+        return False
+
     prompt = f"""You are an incredibly strict math teacher grading a student's partial scratchpad.
 
     Problem: {question}
@@ -79,11 +84,12 @@ def check_intermediate_correctness_llm(text: str, true_answer: str, question: st
     Student's current scratchpad:
     \"\"\"{text}\"\"\"
 
-    Task: Has the student definitively arrived at and stated the final answer in a way that shows they are giving a final conclusion?
-    If the student just happened to calculate the number "{true_answer}" as a random intermediate step but the problem isn't finished, answer "NO".
-    If the student has clearly finished their reasoning and derived "{true_answer}" as the result, answer "YES".
+    Task: Has the student explicitly arrived at and written down the final answer "{true_answer}" as their FINAL conclusion to the problem?
+    - If the student's scratchpad cuts off before stating the final answer, output NO.
+    - If the student wrote "{true_answer}" but as part of an intermediate calculation (e.g. adding numbers), output NO.
+    - If the student clearly concludes their work with the final answer "{true_answer}", output YES.
 
-    Respond with ONLY the word "YES" or "NO". Nothing else.
+    Respond with exactly and ONLY the word "YES" or "NO". Do not explain.
     """
     
     # We MUST apply the Instruct chat template so the model behaves like an assistant, not an autocomplete engine
