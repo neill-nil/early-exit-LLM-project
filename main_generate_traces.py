@@ -1,9 +1,12 @@
 import json
 import os
 import re
+import google.generativeai as genai
+import time
 from tqdm import tqdm
 from datasets import load_dataset, load_from_disk
 from models.llm_wrapper import HuggingFaceLLMWrapper
+
 
 def extract_answer_gsm8k(text: str) -> str:
     if "####" in text:
@@ -61,40 +64,42 @@ def get_true_answer(item, dataset_name: str) -> str:
             return str(item[col])
     return ""
 
-def check_intermediate_correctness(text: str, true_answer: str, dataset_name: str) -> bool:
+
+
+def check_intermediate_correctness_llm(text: str, true_answer: str, question: str, judge_wrapper: HuggingFaceLLMWrapper) -> bool:
     """
-    Checks if the true answer appears anywhere in the text.
-    Uses regex to ensure it matches the token distinctly.
+    Uses a locally hosted base LLM to carefully read the reasoning trace and decide 
+    if the student has actually stated the final answer yet.
     """
-    true_answer = true_answer.strip().lower()
-    text_lower = text.lower()
+    prompt = f"""You are an incredibly strict math teacher grading a student's partial scratchpad.
+
+    Problem: {question}
+    Correct Final Answer: {true_answer}
+
+    Student's current scratchpad:
+    \"\"\"{text}\"\"\"
+
+    Task: Has the student definitively arrived at and stated the final answer in a way that shows they are giving a final conclusion?
+    If the student just happened to calculate the number "{true_answer}" as a random intermediate step but the problem isn't finished, answer "NO".
+    If the student has clearly finished their reasoning and derived "{true_answer}" as the result, answer "YES".
+
+    Respond with ONLY the word "YES" or "NO". Nothing else.
+    """
     
-    # QA datasets usually mean looking for "yes" / "no" / "true" / "false" or an exact match phrase
-    if 'strategy' in dataset_name.lower() or 'hotpot' in dataset_name.lower():
-        if true_answer == "true" or true_answer == "yes":
-            return bool(re.search(r'\b(true|yes)\b', text_lower))
-        elif true_answer == "false" or true_answer == "no":
-            return bool(re.search(r'\b(false|no)\b', text_lower))
-        return bool(re.search(fr"\b{re.escape(true_answer)}\b", text_lower))
-        
-    # Math datasets: true_answer might be messy (e.g., "30 % .")
-    # So we should extract the core number from the true_answer first
-    numbers = re.findall(r'-?\d+(?:\.\d+)?', true_answer)
-    if numbers:
-        search_num = numbers[0]
-        # Look for exact number surrounded by non-digits
-        pattern = fr"(?<!\d){re.escape(search_num)}(?!\d)"
-        if re.search(pattern, text_lower):
-            return True
-    else:
-        # Fallback if there are no numbers in the true answer but it's a math dataset
-        if re.search(fr"\b{re.escape(true_answer)}\b", text_lower):
-            return True
-        
-    return False
+    # We MUST apply the Instruct chat template so the model behaves like an assistant, not an autocomplete engine
+    chat = [{"role": "user", "content": prompt}]
+    formatted_prompt = judge_wrapper.tokenizer.apply_chat_template(chat, tokenize=False, add_generation_prompt=True)
+    
+    # We pass the prompt to the local judge model and ask for a very short generation
+    # Temperature 0.01 forces effectively deterministic answers without crashing the sampler
+    response_text = judge_wrapper.generate(formatted_prompt, max_new_tokens=10, temperature=0.01)
+    decision = response_text.strip().upper()
+    
+    return decision.startswith("YES")
 
 def generate_traces_for_dataset(
     model_wrapper: HuggingFaceLLMWrapper,
+    judge_wrapper: HuggingFaceLLMWrapper,
     dataset_name: str,
     output_path: str,
     split: str = "train",
@@ -202,7 +207,7 @@ def generate_traces_for_dataset(
             current_generation += step_text
             
             # Check if this latest addition contains the correct answer
-            is_step_correct = check_intermediate_correctness(current_generation, true_answer_str, dataset_name)
+            is_step_correct = check_intermediate_correctness_llm(current_generation, true_answer_str, question, judge_wrapper)
             
             if is_step_correct and not already_solved:
                 already_solved = True
@@ -262,12 +267,16 @@ if __name__ == "__main__":
     print("Initializing Qwen2.5-Math-7B-Instruct...")
     wrapper = HuggingFaceLLMWrapper(model_name="Qwen/Qwen2.5-Math-7B-Instruct")
     
+    print("Initializing Qwen2.5-3B-Instruct (Local Judge)...")
+    judge_wrapper = HuggingFaceLLMWrapper(model_name="Qwen/Qwen2.5-3B-Instruct")
+    
     # Create a dynamic filename based on dataset and batch
     dataset_clean = args.dataset.split('/')[-1]
     filename = f"{dataset_clean}_train_traces_{args.start}_to_{args.end}.json"
     
     generate_traces_for_dataset(
         model_wrapper=wrapper,
+        judge_wrapper=judge_wrapper,
         dataset_name=args.dataset,
         output_path=filename, # Saves to working directory
         split="train",
