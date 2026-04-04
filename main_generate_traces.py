@@ -41,10 +41,9 @@ def get_true_answer(item, dataset_name: str) -> str:
         # Matches "a ) 123" or "a) 123" 
         match = re.search(fr"{correct_letter}\s*\)\s*([^,]+)", options, re.IGNORECASE)
         if match:
-             # Often has trailing quotes or spaces, clean it up
              ans = match.group(1).strip().strip("'\"").strip()
-             return ans
-        return correct_letter
+             return f"Option {correct_letter.upper()} (Value: {ans})"
+        return correct_letter.upper()
         
     if 'svamp' in dataset_name:
         return str(item.get('Answer', ''))
@@ -66,17 +65,45 @@ def get_true_answer(item, dataset_name: str) -> str:
 
 
 
-def check_intermediate_correctness_llm(text: str, true_answer: str, question: str, judge_wrapper: HuggingFaceLLMWrapper) -> bool:
+def check_intermediate_correctness_llm(text: str, true_answer: str, question: str, judge_wrapper: HuggingFaceLLMWrapper, dataset_name: str = "") -> bool:
     """
     Uses a locally hosted base LLM to carefully read the reasoning trace and decide 
     if the student has actually stated the final answer yet.
     """
-    # Fast path: if the exact answer string isn't even in the text, 
-    # there is zero percent chance they have stated it as the final conclusion.
-    if str(true_answer).strip() not in text:
-        return False
+    # Fast path: case insensitive check
+    true_ans_str = str(true_answer).strip().lower()
+    text_lower = text.lower()
+    
+    if 'math_qa' in dataset_name.lower():
+        # Extract letter and value from our formatted "Option X (Value: Y)" string
+        letter_match = re.search(r'option\s+([a-e])', true_ans_str)
+        val_match = re.search(r'value:\s*([^)]+)', true_ans_str)
+        
+        has_letter = letter_match and re.search(rf'\b{letter_match.group(1)}\b', text_lower)
+        has_val = val_match and (val_match.group(1) in text_lower)
+        
+        if not (has_letter or has_val):
+            return False
 
-    prompt = f"""You are an incredibly strict math teacher grading a student's partial scratchpad.
+        prompt = f"""You are a strict teacher grading a multiple-choice math problem.
+
+    Problem: {question}
+    Correct Target: {true_answer}
+
+    Student's current scratchpad:
+    \"\"\"{text}\"\"\"
+
+    Task: Has the student explicitly arrived at and written down the correct option letter, OR the correct numerical value as their FINAL conclusion?
+    - If the student just calculated the value during an intermediate step without finalizing the problem, output NO.
+    - If the student clearly concludes their work and explicitly states the correct option or final value, output YES.
+
+    Respond with exactly and ONLY the word "YES" or "NO". Do not explain.
+    """
+    else:
+        if true_ans_str not in text_lower:
+            return False
+            
+        prompt = f"""You are an incredibly strict math teacher grading a student's partial scratchpad.
 
     Problem: {question}
     Correct Final Answer: {true_answer}
@@ -213,7 +240,7 @@ def generate_traces_for_dataset(
             current_generation += step_text
             
             # Check if this latest addition contains the correct answer
-            is_step_correct = check_intermediate_correctness_llm(current_generation, true_answer_str, question, judge_wrapper)
+            is_step_correct = check_intermediate_correctness_llm(current_generation, true_answer_str, question, judge_wrapper, dataset_name)
             
             if is_step_correct and not already_solved:
                 already_solved = True
