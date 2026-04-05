@@ -129,10 +129,10 @@ def generate_traces_for_strategyqa(
     start_idx: int = 0,
     end_idx: int = 20,
 ):
-    dataset_name = "wics/strategy-qa"
+    dataset_name = "ChilleD/StrategyQA"
     print(f"Loading StrategyQA {split} split...")
     try:
-        local_path = "data/strategy-qa"
+        local_path = "data/StrategyQA"
         if os.path.exists(local_path):
             dataset = load_from_disk(local_path)[split]
         else:
@@ -178,14 +178,18 @@ def generate_traces_for_strategyqa(
             step_text = step_info["step_text"]
             current_generation += step_text
 
-            # Use the Qwen judge to check if the answer has been reached
-            is_step_correct = check_intermediate_correctness_llm(
-                current_generation, true_answer_str, question, judge_wrapper
-            )
+            # Bypass the LLM judge if we already found the answer in a previous step
+            if already_solved:
+                is_step_correct = True
+            else:
+                # Use the Qwen judge to check if the answer has been reached
+                is_step_correct = check_intermediate_correctness_llm(
+                    current_generation, true_answer_str, question, judge_wrapper
+                )
 
-            if is_step_correct and not already_solved:
-                already_solved = True
-                solved_at_step = step_idx
+                if is_step_correct:
+                    already_solved = True
+                    solved_at_step = step_idx
 
             # Record the trace step
             steps_data.append(

@@ -83,16 +83,16 @@ def evaluate_on_strategyqa(
     num_samples: int = 20,
     start_idx: int = 0,
 ):
-    dataset_name = "wics/strategy-qa"
+    dataset_name = "ChilleD/StrategyQA"
     print(f"\nEvaluating pipeline on StrategyQA ({split} set)...")
 
     try:
-        local_path = "data/strategy-qa"
+        local_path = "data/StrategyQA"
         if os.path.exists(local_path):
             from datasets import load_from_disk
             dataset = load_from_disk(local_path)[split]
         else:
-            dataset = load_dataset(dataset_name, trust_remote_code=True)[split]
+            dataset = load_dataset(dataset_name)[split]
 
         # Use a different slice than training to avoid overlap
         eval_start = start_idx
