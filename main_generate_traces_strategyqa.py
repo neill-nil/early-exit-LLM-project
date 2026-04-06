@@ -58,18 +58,21 @@ def check_intermediate_correctness_llm(
     if not any(variant in text_lower for variant in answer_variants):
         return False
 
-    prompt = f"""You are a strict teacher grading a student's partial reasoning.
+    # Fast path 2: Explicit matches completely bypass the LLM judge
+    if f"the answer is {true_answer}" in text_lower or f"'{true_answer}'" in text_lower:
+        return True
 
-Problem: {question}
+    prompt = f"""You are a reasoning grader for a yes/no question.
+
+Question: {question}
 Correct Final Answer: {true_answer}
 
-Student's current reasoning:
+Student's text:
 \"\"\"{text}\"\"\"
 
-Task: Has the student explicitly arrived at and stated the final answer "{true_answer}" as their FINAL conclusion?
-- If the student's reasoning is still ongoing and has not concluded, output NO.
-- If the student mentions "{true_answer}" only as part of intermediate reasoning but hasn't concluded, output NO.
-- If the student clearly concludes their reasoning with the final answer "{true_answer}", output YES.
+Task: Does the student's text conclude with the correct answer "{true_answer}"?
+- If the student explicitly states the correct answer "{true_answer}", or concludes their thought with it, output YES.
+- Output NO otherwise.
 
 Respond with exactly and ONLY the word "YES" or "NO". Do not explain.
 """
@@ -164,7 +167,7 @@ def generate_traces_for_strategyqa(
         current_generation = ""
         steps_data = []
 
-        max_steps = 60
+        max_steps = 30  # 30 steps * 40 tokens = max 1200 tokens
         already_solved = False
         solved_at_step = -1
 
@@ -181,8 +184,8 @@ def generate_traces_for_strategyqa(
             # Bypass the LLM judge if we already found the answer in a previous step
             if already_solved:
                 is_step_correct = True
-            elif step_idx <= 4:
-                # Skip LLM judge for steps 0-4 — answer can't be complete this early
+            elif step_idx <= 1 and not step_info["is_eos"]:
+                # Skip LLM judge for steps 0-1 since StrategyQA uses 40 step tokens
                 is_step_correct = False
             else:
                 # Use the Qwen judge to check if the answer has been reached

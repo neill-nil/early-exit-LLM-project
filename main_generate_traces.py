@@ -240,7 +240,7 @@ def generate_traces_for_dataset(
             current_generation += step_text
             
             # Skip LLM judge for steps 0-4 — answer can't be complete this early
-            if step_idx <= 4:
+            if step_idx <= 4 and not step_info["is_eos"]:
                 is_step_correct = False
             else:
                 is_step_correct = check_intermediate_correctness_llm(current_generation, true_answer_str, question, judge_wrapper, dataset_name)

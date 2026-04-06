@@ -118,11 +118,11 @@ def evaluate_on_strategyqa(
         # Build prompt using OLMo chat template
         prompt = get_few_shot_prompt_strategyqa(question, model_wrapper)
 
-        MAX_STEPS = 60
+        MAX_STEPS = 30  # 30 steps * 40 tokens = max 1200 tokens
         STEP_TOKENS = 40  # 40 tokens/step: fewer MLP calls, faster evaluation
 
         exit_result = pipeline.generate_with_early_exit(
-            prompt, max_steps=MAX_STEPS, step_tokens=STEP_TOKENS
+            prompt, max_steps=MAX_STEPS, step_tokens=STEP_TOKENS, min_steps_before_check=1
         )
 
         actual_tokens_used = exit_result["total_tokens"]

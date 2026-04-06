@@ -58,17 +58,25 @@ class EarlyExitPipeline:
         if 'multiple-choice' in prompt_lower or 'options:' in prompt_lower:
             # Often it says "option is b", "option b", "answer is b"
             matches = re.findall(r'\b(?:option|answer)(?:\s+is)?\s+([a-e])\b', text_lower)
+    def extract_final_answer(self, text, prompt=None):
+        """Extracts the final answer from traces."""
+        text_lower = text.lower()
+        
+        # --- StrategyQA Support ---
+        if prompt and ("'yes' or 'no'" in prompt.lower() or "yes/no question" in prompt.lower()):
+            # If the text explicitly says "the answer is yes" or "the answer is no"
+            if "the answer is yes" in text_lower or "'yes'" in text_lower:
+                return "yes"
+            elif "the answer is no" in text_lower or "'no'" in text_lower:
+                return "no"
+            
+            # Fallback to the absolute last occurrence of yes or no
+            matches = re.findall(r'\b(yes|no)\b', text_lower)
             if matches:
                 return matches[-1]
-                
-        # Boolean QA (StrategyQA / HotpotQA style)
-        elif "'yes' or 'no'" in prompt_lower or 'logical question' in prompt_lower:
-            matches = re.findall(r'\b(yes|no|true|false)\b', text_lower)
-            if matches:
-                return matches[-1] # Grabs the last logical boolean derived
             return ""
-                
-        # Standard Math
+            
+        # --- Standard Math Support ---
         # Priority 1: Qwen often natively outputs \boxed{number}
         boxed_matches = re.findall(r'\\boxed\{([^\}]+)\}', text)
         if boxed_matches:
@@ -96,7 +104,7 @@ class EarlyExitPipeline:
             
         return ""
 
-    def generate_with_early_exit(self, prompt, max_steps=60, step_tokens=20):
+    def generate_with_early_exit(self, prompt, max_steps=60, step_tokens=20, min_steps_before_check=4):
         current_generation = ""
         early_exit_triggered = False
         stopped_at_step = -1
@@ -113,11 +121,9 @@ class EarlyExitPipeline:
             current_generation += step_text
             total_tokens += step_info["num_tokens"]
             
-            # Skip early exit check for the first 5 steps (0-4) — answer can't be complete yet
-            if step_idx <= 4:
+            # Skip early exit check for the initial steps (unless eos ends generation)
+            if step_idx <= min_steps_before_check and not step_info["is_eos"]:
                 print(f"  [Step {step_idx} | Tokens: {total_tokens}] Warmup — skipping early exit check")
-                if step_info["is_eos"]:
-                    break
                 continue
             
             # --- Early Exit Check ---
