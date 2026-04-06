@@ -15,6 +15,12 @@ def _regex_check(extracted: str, true_ans: str) -> bool:
     except re.error:
         return extracted == true_ans
 
+
+def _extract_option_letter(true_ans: str) -> str:
+    """Extract just the letter from 'option d (value: 45)' → 'd'."""
+    m = re.match(r'option\s+([a-e])', true_ans.strip(), re.IGNORECASE)
+    return m.group(1).lower() if m else true_ans.strip().lower()
+
 def get_few_shot_prompt(dataset_name):
     dataset_lower = dataset_name.lower()
     if 'math_qa' in dataset_lower:
@@ -123,14 +129,18 @@ def evaluate_on_dataset(pipeline, dataset_name, split="test", num_samples=20):
         extracted_ans = exit_result["extracted_answer"].strip().lower()
         
         # Check correctness
-        if true_ans == "": 
+        if true_ans == "":
             is_correct = False
+        elif "math_qa" in dataset_name.lower():
+            # true_ans is "option d (value: 45)" — extract just the letter
+            true_letter = _extract_option_letter(true_ans)
+            is_correct = extracted_ans.strip().lower() == true_letter
         elif extracted_ans == true_ans:
-            is_correct = True # Exact match is always true 
+            is_correct = True
         else:
             # Word-boundary regex check to avoid "60" matching "600"
             is_correct = _regex_check(extracted_ans, true_ans)
-            
+
         if is_correct: correct_extractions += 1
             
         total_baseline_tokens += baseline_tokens
@@ -157,14 +167,28 @@ def evaluate_on_dataset(pipeline, dataset_name, split="test", num_samples=20):
     with open(output_filename, "w") as f:
         json.dump(results, f, indent=4)
         
-    print("-" * 50)
-    print(f"Dataset: {dataset_name.upper()}")
-    print(f"Final Accuracy: {avg_accuracy*100:.2f}%")
-    print(f"Total Tokens Saved vs Historical Trace Average ({total_baseline_tokens / num_samples:.1f}): {token_savings_pct:.2f}%")
-    print(f"Average Tokens Generated Before Exit: {total_exit_tokens / num_samples:.1f}")
-    print(f"Detailed logs saved to: {output_filename}")
-    print("-" * 50)
-    
+    report_lines = [
+        "=" * 55,
+        f"  EVALUATION METRICS: {dataset_name.upper()} ({split})",
+        "=" * 55,
+        f"  Total Samples        : {num_samples}",
+        f"  Correct Answers      : {correct_extractions}",
+        f"  Accuracy             : {avg_accuracy*100:.2f}%",
+        f"  Avg Baseline Tokens  : {total_baseline_tokens / num_samples:.1f}",
+        f"  Avg Tokens Used      : {total_exit_tokens / num_samples:.1f}",
+        f"  Token Savings        : {token_savings_pct:.2f}%",
+        "=" * 55,
+    ]
+    report = "\n".join(report_lines)
+    print(report)
+    print(f"  Detailed logs  → {output_filename}")
+
+    # Save metrics to txt
+    txt_filename = output_filename.replace(".json", "_metrics.txt")
+    with open(txt_filename, "w") as f:
+        f.write(report + "\n")
+    print(f"  Metrics report → {txt_filename}")
+
     return results
 
 if __name__ == "__main__":
