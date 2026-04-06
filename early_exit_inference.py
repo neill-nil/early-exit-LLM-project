@@ -113,6 +113,13 @@ class EarlyExitPipeline:
             current_generation += step_text
             total_tokens += step_info["num_tokens"]
             
+            # Skip early exit check for the first 5 steps (0-4) — answer can't be complete yet
+            if step_idx <= 4:
+                print(f"  [Step {step_idx} | Tokens: {total_tokens}] Warmup — skipping early exit check")
+                if step_info["is_eos"]:
+                    break
+                continue
+            
             # --- Early Exit Check ---
             with torch.no_grad():
                 # 1. Embed text (ensure it's 2D: [1, 384])

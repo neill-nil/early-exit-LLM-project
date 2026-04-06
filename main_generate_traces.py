@@ -239,8 +239,11 @@ def generate_traces_for_dataset(
             step_text = step_info["step_text"]
             current_generation += step_text
             
-            # Check if this latest addition contains the correct answer
-            is_step_correct = check_intermediate_correctness_llm(current_generation, true_answer_str, question, judge_wrapper, dataset_name)
+            # Skip LLM judge for steps 0-4 — answer can't be complete this early
+            if step_idx <= 4:
+                is_step_correct = False
+            else:
+                is_step_correct = check_intermediate_correctness_llm(current_generation, true_answer_str, question, judge_wrapper, dataset_name)
             
             if is_step_correct and not already_solved:
                 already_solved = True

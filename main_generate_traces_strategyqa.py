@@ -172,7 +172,7 @@ def generate_traces_for_strategyqa(
             step_info = model_wrapper.generate_step(
                 prompt=prompt,
                 current_generation=current_generation,
-                step_tokens_limit=20,
+                step_tokens_limit=40,  # 40 tokens/step: fewer MLP calls, faster evaluation
             )
 
             step_text = step_info["step_text"]
@@ -181,6 +181,9 @@ def generate_traces_for_strategyqa(
             # Bypass the LLM judge if we already found the answer in a previous step
             if already_solved:
                 is_step_correct = True
+            elif step_idx <= 4:
+                # Skip LLM judge for steps 0-4 — answer can't be complete this early
+                is_step_correct = False
             else:
                 # Use the Qwen judge to check if the answer has been reached
                 is_step_correct = check_intermediate_correctness_llm(

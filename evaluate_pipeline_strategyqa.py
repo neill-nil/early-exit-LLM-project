@@ -119,7 +119,7 @@ def evaluate_on_strategyqa(
         prompt = get_few_shot_prompt_strategyqa(question, model_wrapper)
 
         MAX_STEPS = 60
-        STEP_TOKENS = 20
+        STEP_TOKENS = 40  # 40 tokens/step: fewer MLP calls, faster evaluation
 
         exit_result = pipeline.generate_with_early_exit(
             prompt, max_steps=MAX_STEPS, step_tokens=STEP_TOKENS
@@ -163,15 +163,27 @@ def evaluate_on_strategyqa(
     with open(output_filename, "w") as f:
         json.dump(results, f, indent=4)
 
-    print("-" * 50)
-    print(f"Dataset: STRATEGY_QA")
-    print(f"Final Accuracy: {avg_accuracy*100:.2f}%")
-    print(
-        f"Total Tokens Saved vs Baseline ({baseline_tokens:.1f}): {token_savings_pct:.2f}%"
-    )
-    print(f"Average Tokens Generated Before Exit: {total_exit_tokens / max(1, actual_num):.1f}")
-    print(f"Detailed logs saved to: {output_filename}")
-    print("-" * 50)
+    report_lines = [
+        "=" * 55,
+        f"  EVALUATION METRICS: STRATEGY_QA ({split})",
+        "=" * 55,
+        f"  Total Samples        : {actual_num}",
+        f"  Correct Answers      : {correct_extractions}",
+        f"  Accuracy             : {avg_accuracy*100:.2f}%",
+        f"  Avg Baseline Tokens  : {baseline_tokens:.1f}",
+        f"  Avg Tokens Used      : {total_exit_tokens / max(1, actual_num):.1f}",
+        f"  Token Savings        : {token_savings_pct:.2f}%",
+        "=" * 55,
+    ]
+    report = "\n".join(report_lines)
+    print(report)
+    print(f"  Detailed logs  → {output_filename}")
+
+    # Save metrics to txt
+    txt_filename = output_filename.replace(".json", "_metrics.txt")
+    with open(txt_filename, "w") as f:
+        f.write(report + "\n")
+    print(f"  Metrics report → {txt_filename}")
 
     return results
 
