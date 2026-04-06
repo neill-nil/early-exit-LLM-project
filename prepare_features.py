@@ -1,37 +1,56 @@
 import json
-import glob
 import torch
 import numpy as np
 from tqdm import tqdm
 from sentence_transformers import SentenceTransformer
 import os
 
-def load_traces(traces_dir="data/traces"):
+def load_traces(file_paths: list, dataset_label: str = ""):
+    """Load and merge traces from an explicit list of files.
+    
+    - Skips files whose name contains 'fewshot'.
+    - Deduplicates by question 'id' (first occurrence wins).
+    - Skips samples where is_correct is False.
+    - Does NOT apply the old solved_at_step <= 2 guard (LLM judge handles this).
+    """
     all_traces = []
-    # Combine all json files from the traces directory
-    for file_path in glob.glob(f"{traces_dir}/*.json"):
-        print(f"Loading traces from {file_path}")
+    seen_ids = set()
+    
+    for file_path in file_paths:
+        file_name = os.path.basename(file_path)
+        
+        # Skip fewshot files
+        if "fewshot" in file_name.lower():
+            print(f"Skipping fewshot file: {file_name}")
+            continue
+        
+        print(f"Loading traces from {file_name}...")
         with open(file_path, "r") as f:
             data = json.load(f)
+        
+        kept, skipped_incorrect, skipped_dup = 0, 0, 0
+        for item in data:
+            # Skip if model was wrong
+            if not item.get("is_correct", False):
+                skipped_incorrect += 1
+                continue
             
-            # Filter out traces based on user conditions
-            valid_traces = []
-            for item in data:
-                # 1. Skip if model wasn't able to answer it
-                if not item.get("is_correct", False):
-                    continue
-                    
-                # 2. Skip if it answered way too early (Step 0, 1, or 2)
-                # This usually means coincidental number matching rather than actual solved math
-                if item.get("solved_at_step", -1) <= 2:
-                    continue
-                    
-                valid_traces.append(item)
-                
-            all_traces.extend(valid_traces)
-            print(f"  -> Kept {len(valid_traces)} valid samples out of {len(data)} total.")
+            # Dedup by question id
+            qid = item.get("id")
+            if qid is not None and qid in seen_ids:
+                skipped_dup += 1
+                continue
+            if qid is not None:
+                seen_ids.add(qid)
             
+            all_traces.append(item)
+            kept += 1
+        
+        print(f"  -> Kept {kept} | Skipped (wrong): {skipped_incorrect} | Skipped (duplicate id): {skipped_dup}")
+    
+    print(f"\n[{dataset_label}] Total valid samples loaded: {len(all_traces)}\n")
     return all_traces
+
 
 def extract_features(traces, model_name="all-MiniLM-L6-v2"):
     print(f"Loading embedding model: {model_name}...")
@@ -82,12 +101,31 @@ def extract_features(traces, model_name="all-MiniLM-L6-v2"):
     return X, y
 
 if __name__ == "__main__":
-    traces = load_traces("data/traces") 
-    if not traces:
-        print("No traces found in data/traces/. Please generate traces first.")
+    TRACES_DIR = "data/traces"
+    
+    # --- File lists (fewshot files are auto-skipped too, but we exclude them explicitly here) ---
+    gsm8k_files = [
+        f"{TRACES_DIR}/gsm8k_train_traces_110_to_310.json",
+        f"{TRACES_DIR}/gsm8k_train_traces_100_to_110 (1).json",
+        f"{TRACES_DIR}/gsm8k_train_traces_0_to_200-api.json",
+    ]
+    mathqa_files = [
+        f"{TRACES_DIR}/math_qa_train_traces_5_to_150.json",
+        f"{TRACES_DIR}/math_qa_train_traces_0_to_5.json",
+    ]
+    
+    gsm8k_traces = load_traces(gsm8k_files, dataset_label="GSM8K")
+    mathqa_traces = load_traces(mathqa_files, dataset_label="MathQA")
+    
+    all_traces = gsm8k_traces + mathqa_traces
+    
+    if not all_traces:
+        print("No valid traces found. Please generate traces first.")
         exit()
-        
-    X, y = extract_features(traces)
+    
+    print(f"Combined dataset: {len(all_traces)} total samples ({len(gsm8k_traces)} GSM8K + {len(mathqa_traces)} MathQA)")
+    
+    X, y = extract_features(all_traces)
     
     print(f"\nFeature matrix X shape: {X.shape}")
     print(f"Labels y shape: {y.shape}")
@@ -99,3 +137,4 @@ if __name__ == "__main__":
     np.save("data/features/X.npy", X)
     np.save("data/features/y.npy", y)
     print("Done! Features are ready for MLP training.")
+

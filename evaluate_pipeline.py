@@ -1,10 +1,19 @@
 import json
 import os
+import re
 from tqdm import tqdm
 from datasets import load_dataset
 from models.llm_wrapper import HuggingFaceLLMWrapper
 from early_exit_inference import EarlyExitPipeline
-from main_generate_traces import get_question, get_true_answer, check_intermediate_correctness
+from main_generate_traces import get_question, get_true_answer
+
+def _regex_check(extracted: str, true_ans: str) -> bool:
+    """Word-boundary regex check to avoid '60' matching '600'."""
+    try:
+        pattern = r'(?<![\d.])' + re.escape(true_ans) + r'(?![\d.])'
+        return bool(re.search(pattern, extracted, re.IGNORECASE))
+    except re.error:
+        return extracted == true_ans
 
 def get_few_shot_prompt(dataset_name):
     dataset_lower = dataset_name.lower()
@@ -55,33 +64,36 @@ def get_few_shot_prompt(dataset_name):
 def evaluate_on_dataset(pipeline, dataset_name, split="test", num_samples=20):
     print(f"\nEvaluating pipeline on {dataset_name} ({split} set)...")
     
-    try:
-        # Check if local data exists first, exactly like traces generation
-        local_path = f"data/{dataset_name.split('/')[-1]}"
-        if os.path.exists(local_path):
+    # 1. Try local disk first (for Kaggle where datasets are pre-loaded)
+    local_path = f"data/{dataset_name.split('/')[-1]}"
+    dataset = None
+
+    if os.path.exists(local_path):
+        try:
             from datasets import load_from_disk
             dataset = load_from_disk(local_path)[split]
-        else:
+            print(f"Loaded from local disk: {local_path}")
+        except Exception as e:
+            print(f"Local load failed ({e}), trying HuggingFace...")
+
+    # 2. Fall back to HuggingFace download (always use trust_remote_code=True)
+    if dataset is None:
+        try:
             if dataset_name == "gsm8k":
                 dataset = load_dataset(dataset_name, "main", trust_remote_code=True)[split]
             else:
-                dataset = load_dataset(dataset_name)[split]
-                
-        if dataset_name == "math_qa":
-            # Taking samples 300 to 300+num_samples from the train split to avoid training overlap
-            dataset = dataset.select(range(300, 300 + num_samples))
-        else:
-            dataset = dataset.select(range(min(num_samples, len(dataset))))
-            
-    except Exception as e:
-        print(f"Hugging Face fetch failed ({e}). Attempting offline load from data/{dataset_name.split('/')[-1]}...")
-        from datasets import load_from_disk
-        dataset = load_from_disk(f"data/{dataset_name.split('/')[-1]}")[split]
-        
-        if dataset_name == "math_qa":
-            dataset = dataset.select(range(300, 300 + num_samples))
-        else:
-            dataset = dataset.select(range(min(num_samples, len(dataset))))
+                dataset = load_dataset(dataset_name, trust_remote_code=True)[split]
+            print(f"Loaded from HuggingFace: {dataset_name}")
+        except Exception as e:
+            raise RuntimeError(
+                f"Could not load '{dataset_name}' from disk or HuggingFace. Error: {e}"
+            )
+
+    if dataset_name == "math_qa":
+        # Taking samples 300 to 300+num_samples from the train split to avoid training overlap
+        dataset = dataset.select(range(300, 300 + num_samples))
+    else:
+        dataset = dataset.select(range(min(num_samples, len(dataset))))
     prompt_template = get_few_shot_prompt(dataset_name)
     
     results = []
@@ -116,8 +128,8 @@ def evaluate_on_dataset(pipeline, dataset_name, split="test", num_samples=20):
         elif extracted_ans == true_ans:
             is_correct = True # Exact match is always true 
         else:
-            # Use the robust regex boundary matcher from the generation script to avoid "60" matching "600"
-            is_correct = check_intermediate_correctness(extracted_ans, true_ans, dataset_name)
+            # Word-boundary regex check to avoid "60" matching "600"
+            is_correct = _regex_check(extracted_ans, true_ans)
             
         if is_correct: correct_extractions += 1
             
@@ -173,4 +185,4 @@ if __name__ == "__main__":
     
     if args.dataset in ["all", "math_qa"]:
         # User only has math_qa train split uploaded to Kaggle local storage, so we evaluate strictly on unseen "train" slice
-        evaluate_on_dataset(pipeline, "math_qa", split="train", num_samples=25)
+        evaluate_on_dataset(pipeline, "math_qa", split="train", num_samples=20)
