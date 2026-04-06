@@ -1,5 +1,5 @@
 import torch
-from transformers import AutoModelForCausalLM, AutoTokenizer
+from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
 from typing import Dict, Any
 from abc import ABC, abstractmethod
 
@@ -30,7 +30,7 @@ class HuggingFaceLLMWrapper(LLMWrapper):
     Wrapper for loading open-source models (like Qwen2.5-Math-7B) via Hugging Face Transformers.
     """
     
-    def __init__(self, model_name: str = "Qwen/Qwen2.5-Math-7B-Instruct", device: str = None):
+    def __init__(self, model_name: str = "Qwen/Qwen2.5-Math-7B-Instruct", device: str = None, load_in_4bit: bool = False):
         if device is None:
             self.device = "cuda" if torch.cuda.is_available() else "cpu"
         else:
@@ -40,13 +40,25 @@ class HuggingFaceLLMWrapper(LLMWrapper):
         self.tokenizer = AutoTokenizer.from_pretrained(model_name)
         
         print(f"Loading model {model_name} on {self.device}...")
-        # For Kaggle (15GB VRAM), bfloat16 is usually best for 7B models.
-        # If it OOMs, we can switch to load_in_8bit=True
-        self.model = AutoModelForCausalLM.from_pretrained(
-            model_name,
-            torch_dtype=torch.bfloat16, 
-            device_map="auto" # Automatically places layers on GPU/CPU to fit memory
-        )
+        if load_in_4bit:
+            print("  -> Using 4-bit quantization to save VRAM")
+            bnb_config = BitsAndBytesConfig(
+                load_in_4bit=True,
+                bnb_4bit_compute_dtype=torch.bfloat16,
+                bnb_4bit_quant_type="nf4",
+            )
+            self.model = AutoModelForCausalLM.from_pretrained(
+                model_name,
+                quantization_config=bnb_config,
+                device_map="auto",
+            )
+        else:
+            # Default: bfloat16 (original behavior for math pipeline)
+            self.model = AutoModelForCausalLM.from_pretrained(
+                model_name,
+                torch_dtype=torch.bfloat16, 
+                device_map="auto"
+            )
         self.model.eval()
         
     def generate(self, prompt: str, max_new_tokens: int = 512, temperature: float = 0.7) -> str:
