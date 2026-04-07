@@ -20,6 +20,7 @@ from main_generate_traces_strategyqa import (
     get_question_strategyqa,
     get_true_answer_strategyqa,
 )
+from evaluate_pipeline import compute_dynamic_baseline
 
 
 def get_few_shot_prompt_strategyqa(question: str, model_wrapper: HuggingFaceLLMWrapper) -> str:
@@ -108,8 +109,8 @@ def evaluate_on_strategyqa(
     total_exit_tokens = 0
     correct_extractions = 0
 
-    # Empirical baseline for StrategyQA traces (to be updated after generating traces)
-    baseline_tokens = 400.0
+    # Empirical baseline for StrategyQA traces computed dynamically from traces:
+    baseline_tokens = compute_dynamic_baseline(["strategy-qa"], 850.0)
 
     for idx, item in enumerate(tqdm(dataset)):
         question = get_question_strategyqa(item)

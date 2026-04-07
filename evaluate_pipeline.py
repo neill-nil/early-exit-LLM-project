@@ -1,11 +1,37 @@
 import json
 import os
 import re
+import glob
 from tqdm import tqdm
 from datasets import load_dataset
 from models.llm_wrapper import HuggingFaceLLMWrapper
 from early_exit_inference import EarlyExitPipeline
 from main_generate_traces import get_question, get_true_answer
+
+def compute_dynamic_baseline(dataset_identifiers: list, default_baseline: float) -> float:
+    """Calculates the average unconstrained tokens used from the existing trace files."""
+    traces_dir = "data/traces"
+    total_tokens = 0
+    count = 0
+    
+    for identifier in dataset_identifiers:
+        for file_path in glob.glob(f"{traces_dir}/*{identifier}*.json"):
+            if "fewshot" in file_path.lower() or "eval" in file_path.lower(): 
+                continue
+            try:
+                with open(file_path, "r") as f:
+                    data = json.load(f)
+                    for item in data:
+                        if "steps" in item and len(item["steps"]) > 0:
+                            last_step = item["steps"][-1]
+                            total_tokens += last_step.get("num_tokens", 0)
+                            count += 1
+            except Exception:
+                pass
+                
+    if count > 0:
+        return float(total_tokens) / count
+    return default_baseline
 
 def _regex_check(extracted: str, true_ans: str) -> bool:
     """Word-boundary regex check to avoid '60' matching '600'."""
@@ -115,11 +141,11 @@ def evaluate_on_dataset(pipeline, dataset_name, split="test", num_samples=20):
         MAX_STEPS = 60
         STEP_TOKENS = 20
         
-        # We assume a dataset-specific average baseline derived from the unconstrained training traces
+        # We dynamically compute the baseline from existing traces for fairness
         if "gsm8k" in dataset_name.lower():
-            baseline_tokens = 386.0  # Empirical average from GSM8K traces
+            baseline_tokens = compute_dynamic_baseline(["gsm8k"], 386.0)
         elif "math_qa" in dataset_name.lower():
-            baseline_tokens = 500.0  # Empirical average from MathQA traces
+            baseline_tokens = compute_dynamic_baseline(["math_qa"], 500.0)
         else:
             baseline_tokens = 600.0  # Fallback
             

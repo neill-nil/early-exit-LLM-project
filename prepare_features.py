@@ -113,17 +113,23 @@ if __name__ == "__main__":
         f"{TRACES_DIR}/math_qa_train_traces_5_to_150.json",
         f"{TRACES_DIR}/math_qa_train_traces_0_to_5.json",
     ]
+    strategyqa_files = [
+        f"{TRACES_DIR}/strategy-qa_train_traces_0_to_50.json",
+        f"{TRACES_DIR}/strategy-qa_train_traces_50_to_100.json",
+        f"{TRACES_DIR}/strategy-qa_train_traces_100_to_150.json",
+    ]
     
     gsm8k_traces = load_traces(gsm8k_files, dataset_label="GSM8K")
     mathqa_traces = load_traces(mathqa_files, dataset_label="MathQA")
-    
-    all_traces = gsm8k_traces + mathqa_traces
+    strategyqa_traces = load_traces(strategyqa_files, dataset_label="StrategyQA")
+
+    all_traces = gsm8k_traces + mathqa_traces + strategyqa_traces
     
     if not all_traces:
         print("No valid traces found. Please generate traces first.")
         exit()
     
-    print(f"Combined dataset: {len(all_traces)} total samples ({len(gsm8k_traces)} GSM8K + {len(mathqa_traces)} MathQA)")
+    print(f"Combined dataset: {len(all_traces)} total samples ({len(gsm8k_traces)} GSM8K + {len(mathqa_traces)} MathQA + {len(strategyqa_traces)} StrategyQA)")
     
     X, y = extract_features(all_traces)
     
