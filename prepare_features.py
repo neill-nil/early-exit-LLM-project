@@ -4,6 +4,13 @@ import numpy as np
 from tqdm import tqdm
 from sentence_transformers import SentenceTransformer
 import os
+import argparse
+
+try:
+    from strategies.advanced_features import extract_advanced_features
+except ImportError:
+    # Handle gracefully if the file isn't available
+    pass
 
 def load_traces(file_paths: list, dataset_label: str = ""):
     """Load and merge traces from an explicit list of files.
@@ -52,7 +59,7 @@ def load_traces(file_paths: list, dataset_label: str = ""):
     return all_traces
 
 
-def extract_features(traces, model_name="all-MiniLM-L6-v2"):
+def extract_features(traces, model_name="all-MiniLM-L6-v2", use_advanced_features=False):
     print(f"Loading embedding model: {model_name}...")
     embedder = SentenceTransformer(model_name)
     
@@ -73,11 +80,17 @@ def extract_features(traces, model_name="all-MiniLM-L6-v2"):
             # Label
             is_correct = 1.0 if step.get("has_correct_answer", False) else 0.0
             
-            features.append({
+            step_data = {
                 "text": text,
                 "step_idx": step_idx,
                 "num_tokens": num_tokens
-            })
+            }
+            
+            if use_advanced_features:
+                advanced_extras = extract_advanced_features(step)
+                step_data["advanced"] = advanced_extras
+                
+            features.append(step_data)
             labels.append(is_correct)
             
     print("Computing embeddings in batches (this may take a minute)...")
@@ -88,11 +101,15 @@ def extract_features(traces, model_name="all-MiniLM-L6-v2"):
     # Combine embeddings with scalar features
     X = []
     for i, f in enumerate(features):
-        row = np.concatenate([
+        row_components = [
             embeddings[i],
             [f["step_idx"]], 
             [f["num_tokens"]]
-        ])
+        ]
+        if use_advanced_features and "advanced" in f:
+            row_components.append(f["advanced"])
+            
+        row = np.concatenate(row_components)
         X.append(row)
         
     X = np.array(X, dtype=np.float32)
@@ -101,6 +118,10 @@ def extract_features(traces, model_name="all-MiniLM-L6-v2"):
     return X, y
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Extract features for Early Exit Controller.")
+    parser.add_argument("--use_advanced_features", action="store_true", help="Include entropy-related and positional scalar features.")
+    args = parser.parse_args()
+
     TRACES_DIR = "data/traces"
     
     # --- File lists (fewshot files are auto-skipped too, but we exclude them explicitly here) ---
@@ -131,7 +152,8 @@ if __name__ == "__main__":
     
     print(f"Combined dataset: {len(all_traces)} total samples ({len(gsm8k_traces)} GSM8K + {len(mathqa_traces)} MathQA + {len(strategyqa_traces)} StrategyQA)")
     
-    X, y = extract_features(all_traces)
+    print(f"Advanced features enabled: {args.use_advanced_features}")
+    X, y = extract_features(all_traces, use_advanced_features=args.use_advanced_features)
     
     print(f"\nFeature matrix X shape: {X.shape}")
     print(f"Labels y shape: {y.shape}")
@@ -139,8 +161,11 @@ if __name__ == "__main__":
     
     os.makedirs("data/features", exist_ok=True)
     
+    # Rename output slightly if we are using advanced features so we don't accidentally overwrite the classic X.npy cleanly
+    file_suffix = "_adv" if args.use_advanced_features else ""
+    
     print("Saving features and labels to data/features/...")
-    np.save("data/features/X.npy", X)
-    np.save("data/features/y.npy", y)
-    print("Done! Features are ready for MLP training.")
+    np.save(f"data/features/X{file_suffix}.npy", X)
+    np.save(f"data/features/y{file_suffix}.npy", y)
+    print(f"Done! Features are ready for MLP training (saved as X{file_suffix}.npy).")
 

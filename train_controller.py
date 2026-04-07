@@ -26,11 +26,12 @@ class EarlyExitMLP(nn.Module):
     def forward(self, x):
         return self.network(x).squeeze()
 
-def train_and_evaluate():
+def train_and_evaluate(use_advanced=False):
     print("Loading extracted features...")
     try:
-        X = np.load("data/features/X.npy")
-        y = np.load("data/features/y.npy")
+        suffix = "_adv" if use_advanced else ""
+        X = np.load(f"data/features/X{suffix}.npy")
+        y = np.load(f"data/features/y{suffix}.npy")
     except FileNotFoundError:
         print("Features not found! Please run prepare_features.py first.")
         return
@@ -44,17 +45,21 @@ def train_and_evaluate():
     X_train, y_train = torch.FloatTensor(X[train_idx]), torch.FloatTensor(y[train_idx])
     X_test, y_test = torch.FloatTensor(X[test_idx]), torch.FloatTensor(y[test_idx])
     
-    # Normalize the scalar features (step_idx and num_tokens which are at the end)
-    mean_scalars = X_train[:, -2:].mean(dim=0)
-    std_scalars = X_train[:, -2:].std(dim=0) + 1e-8
+    # Standard sentence embeddings are the first 384 dimensions.
+    # Everything after that are scalar features that need normalization.
+    scalar_start_idx = 384
+    mean_scalars = X_train[:, scalar_start_idx:].mean(dim=0)
+    std_scalars = X_train[:, scalar_start_idx:].std(dim=0) + 1e-8
     
-    X_train[:, -2:] = (X_train[:, -2:] - mean_scalars) / std_scalars
-    X_test[:, -2:] = (X_test[:, -2:] - mean_scalars) / std_scalars
+    X_train[:, scalar_start_idx:] = (X_train[:, scalar_start_idx:] - mean_scalars) / std_scalars
+    X_test[:, scalar_start_idx:] = (X_test[:, scalar_start_idx:] - mean_scalars) / std_scalars
     
     os.makedirs("models", exist_ok=True)
-    torch.save({"mean": mean_scalars, "std": std_scalars}, "models/scaler.pt")
+    suffix = "_adv" if use_advanced else ""
+    torch.save({"mean": mean_scalars, "std": std_scalars}, f"models/scaler{suffix}.pt")
     
     print(f"Train size: {len(X_train)}, Test size: {len(X_test)}")
+    print(f"Scalar feature dimensions scaled: {X.shape[1] - 384}")
     
     # Dataloaders
     train_dataset = TensorDataset(X_train, y_train)
@@ -120,8 +125,14 @@ def train_and_evaluate():
             best_model_weights = copy.deepcopy(model.state_dict())
             
     print("\nTraining complete! Saving best model...")
-    torch.save(best_model_weights, "models/early_exit_controller.pt")
-    print("Model saved to models/early_exit_controller.pt")
+    suffix = "_adv" if use_advanced else ""
+    torch.save(best_model_weights, f"models/early_exit_controller{suffix}.pt")
+    print(f"Model saved to models/early_exit_controller{suffix}.pt")
 
 if __name__ == "__main__":
-    train_and_evaluate()
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--use_advanced_features", action="store_true", help="Train model using the advanced feature set (_adv.npy files).")
+    args = parser.parse_args()
+    
+    train_and_evaluate(use_advanced=args.use_advanced_features)

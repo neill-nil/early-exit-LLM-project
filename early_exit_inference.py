@@ -133,13 +133,27 @@ class EarlyExitPipeline:
                 if emb.dim() == 1:
                     emb = emb.unsqueeze(0)
                 
-                # 2. Normalize scalars (make them 2D: [1, 2])
+                # 2. Normalize scalars
                 # We use the token count *for this step*, NOT the accumulating total, because that is what the MLP was trained on in prepare_features.py
                 current_step_tokens = step_info["num_tokens"]
-                scalars = torch.tensor([[step_idx, current_step_tokens]], dtype=torch.float32, device=self.device)
+                
+                scalar_features = [step_idx, current_step_tokens]
+                
+                # If trained with advanced features, the scaler mean vector will have length > 2
+                if len(self.mean_scalars) > 2:
+                    from strategies.advanced_features import extract_advanced_features
+                    step_dict = {
+                        "text_added": step_info["step_text"],
+                        "cumulative_text": current_generation,
+                        "num_tokens": current_step_tokens,
+                        "step_index": step_idx
+                    }
+                    scalar_features.extend(extract_advanced_features(step_dict))
+                
+                scalars = torch.tensor([scalar_features], dtype=torch.float32, device=self.device)
                 scalars_norm = (scalars - self.mean_scalars) / self.std_scalars
                 
-                # 3. Concatenate (Result: [1, 386])
+                # 3. Concatenate (Result length automatically adjusts)
                 x = torch.cat([emb, scalars_norm], dim=1)
                 
                 # Predict
