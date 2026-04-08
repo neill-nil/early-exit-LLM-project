@@ -23,7 +23,11 @@ class EarlyExitPipeline:
         
         # Load MLP
         print("Loading Early-Exit Controller...")
-        self.controller = EarlyExitMLP(input_dim=386).to(self.device)
+        
+        # Calculate dynamic input dimension (384 embedding dims + scaled features)
+        dynamic_input_dim = 384 + len(self.mean_scalars)
+        
+        self.controller = EarlyExitMLP(input_dim=dynamic_input_dim).to(self.device)
         self.controller.load_state_dict(torch.load(controller_path, map_location=self.device))
         self.controller.eval()
         

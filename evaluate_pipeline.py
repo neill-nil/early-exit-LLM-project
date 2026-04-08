@@ -222,7 +222,8 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Evaluate Early Exit Pipeline")
     parser.add_argument("--controller", type=str, default="models/early_exit_controller.pt", help="Path to early_exit_controller.pt")
     parser.add_argument("--scaler", type=str, default="models/scaler.pt", help="Path to scaler.pt")
-    parser.add_argument("--dataset", type=str, default="all", choices=["all", "gsm8k", "math_qa"], help="Which dataset to evaluate. Options: all, gsm8k, math_qa")
+    parser.add_argument("--dataset", type=str, default="all", choices=["all", "gsm8k", "math_qa"], help="Which dataset to evaluate.")
+    parser.add_argument("--num_samples", type=int, default=25, help="Number of samples to evaluate off the top of the dataset.")
     args = parser.parse_args()
 
     print("Initializing Qwen Model and Pipeline...")
@@ -231,8 +232,8 @@ if __name__ == "__main__":
     pipeline = EarlyExitPipeline(wrapper, controller_path=args.controller, scaler_path=args.scaler, threshold=0.85)
     
     if args.dataset in ["all", "gsm8k"]:
-        evaluate_on_dataset(pipeline, "gsm8k", split="test", num_samples=25)
+        evaluate_on_dataset(pipeline, "gsm8k", split="test", num_samples=args.num_samples)
     
     if args.dataset in ["all", "math_qa"]:
         # User only has math_qa train split uploaded to Kaggle local storage, so we evaluate strictly on unseen "train" slice
-        evaluate_on_dataset(pipeline, "math_qa", split="train", num_samples=20)
+        evaluate_on_dataset(pipeline, "math_qa", split="train", num_samples=args.num_samples)
