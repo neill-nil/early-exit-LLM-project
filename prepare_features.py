@@ -25,8 +25,15 @@ def load_traces(file_paths: list, dataset_label: str = ""):
             continue
         
         print(f"Loading traces from {file_name}...")
-        with open(file_path, "r") as f:
-            data = json.load(f)
+        try:
+            with open(file_path, "r") as f:
+                data = json.load(f)
+        except json.decoder.JSONDecodeError as e:
+            print(f"  [WARNING] Skipping {file_path} because it is corrupted or incomplete: {e}")
+            continue
+        except Exception as e:
+            print(f"  [WARNING] Skipping {file_path} due to error: {e}")
+            continue
         
         kept, skipped_incorrect, skipped_dup = 0, 0, 0
         for item in data:
@@ -101,29 +108,28 @@ def extract_features(traces, model_name="all-MiniLM-L6-v2"):
     return X, y
 
 if __name__ == "__main__":
-    TRACES_DIR = "data/traces"
+    import argparse
+    import glob
     
-    # --- File lists (fewshot files are auto-skipped too, but we exclude them explicitly here) ---
-    gsm8k_files = [
-        f"{TRACES_DIR}/gsm8k_train_traces_110_to_310.json",
-        f"{TRACES_DIR}/gsm8k_train_traces_100_to_110 (1).json",
-        f"{TRACES_DIR}/gsm8k_train_traces_0_to_200-api.json",
-    ]
-    mathqa_files = [
-        f"{TRACES_DIR}/math_qa_train_traces_5_to_150.json",
-        f"{TRACES_DIR}/math_qa_train_traces_0_to_5.json",
-    ]
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--traces_dir", type=str, default="data/traces", help="Directory where *_traces_*.json are stored")
+    args = parser.parse_args()
     
-    gsm8k_traces = load_traces(gsm8k_files, dataset_label="GSM8K")
-    mathqa_traces = load_traces(mathqa_files, dataset_label="MathQA")
+    traces_dir = args.traces_dir
+    print(f"Searching for trace files in '{traces_dir}'...")
+    trace_files = glob.glob(os.path.join(traces_dir, "*_traces_*.json"))
     
-    all_traces = gsm8k_traces + mathqa_traces
+    if not trace_files:
+        print(f"CRITICAL ERROR: No trace files found in {traces_dir}.")
+        exit()
+        
+    all_traces = load_traces(trace_files, dataset_label="All Datasets")
     
     if not all_traces:
-        print("No valid traces found. Please generate traces first.")
+        print("No valid traces found after filtering. Please generate traces first.")
         exit()
     
-    print(f"Combined dataset: {len(all_traces)} total samples ({len(gsm8k_traces)} GSM8K + {len(mathqa_traces)} MathQA)")
+    print(f"Combined dataset: {len(all_traces)} total samples")
     
     X, y = extract_features(all_traces)
     
