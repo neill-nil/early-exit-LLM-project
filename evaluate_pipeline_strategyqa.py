@@ -196,45 +196,62 @@ if __name__ == "__main__":
         description="Evaluate Early Exit Pipeline on StrategyQA"
     )
     parser.add_argument(
-        "--controller",
-        type=str,
-        default="models/early_exit_controller.pt",
-        help="Path to early_exit_controller.pt",
+        "--strategy", type=str, default="mlp", choices=["mlp", "consistency"],
+        help="Which strategy to use"
     )
     parser.add_argument(
-        "--scaler",
-        type=str,
-        default="models/scaler.pt",
-        help="Path to scaler.pt",
+        "--controller", type=str, default="models/early_exit_controller.pt",
+        help="Path to early_exit_controller.pt"
     )
     parser.add_argument(
-        "--num_samples",
-        type=int,
-        default=25,
-        help="Number of samples to evaluate",
+        "--scaler", type=str, default="models/scaler.pt",
+        help="Path to scaler.pt"
     )
     parser.add_argument(
-        "--start",
-        type=int,
-        default=300,
-        help="Start index in the dataset (to avoid training overlap)",
+        "--num_samples", type=int, default=25,
+        help="Number of samples to evaluate"
     )
     parser.add_argument(
-        "--threshold",
-        type=float,
-        default=0.85,
-        help="Early exit confidence threshold",
+        "--start", type=int, default=300,
+        help="Start index in the dataset (to avoid training overlap)"
+    )
+    parser.add_argument(
+        "--threshold", type=float, default=0.85,
+        help="Early exit confidence threshold (for MLP)"
+    )
+    parser.add_argument(
+        "--consistency-threshold", type=int, default=3,
+        help="Patience threshold for consistency approach"
+    )
+    parser.add_argument(
+        "--judge-model", type=str, default="Qwen/Qwen2.5-3B-Instruct",
+        help="Model for consistency judge"
     )
     args = parser.parse_args()
 
     print("Initializing OLMo-3-7B-Think for StrategyQA evaluation...")
     wrapper = HuggingFaceLLMWrapper(model_name="allenai/OLMo-3-7B-Think")
 
+    if args.strategy == "mlp":
+        from strategies.learning_based import LearningBasedController
+        strategy = LearningBasedController(
+            controller_path=args.controller,
+            scaler_path=args.scaler,
+            threshold=args.threshold,
+        )
+    else:
+        from strategies.consistency import ConsistencyController
+        print(f"Initializing Context Judge Model ({args.judge_model})...")
+        judge_wrapper = HuggingFaceLLMWrapper(model_name=args.judge_model)
+        strategy = ConsistencyController(
+            judge_wrapper=judge_wrapper,
+            consistency_threshold=args.consistency_threshold,
+            dataset_name="strategyqa",
+        )
+
     pipeline = EarlyExitPipeline(
         wrapper,
-        controller_path=args.controller,
-        scaler_path=args.scaler,
-        threshold=args.threshold,
+        strategy=strategy
     )
 
     evaluate_on_strategyqa(
