@@ -105,12 +105,11 @@ def evaluate_on_strategyqa(
         return
 
     results = []
-    total_baseline_tokens = 0
-    total_exit_tokens = 0
+    baseline_tokens = compute_dynamic_baseline(["strategy-qa"], 953.6)
     correct_extractions = 0
 
-    # Empirical baseline for StrategyQA traces computed dynamically from traces:
-    baseline_tokens = compute_dynamic_baseline(["strategy-qa"], 850.0)
+    total_baseline_tokens = 0
+    total_exit_tokens = 0
 
     for idx, item in enumerate(tqdm(dataset)):
         question = get_question_strategyqa(item)
@@ -216,7 +215,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--start",
         type=int,
-        default=300,
+        default=600,
         help="Start index in the dataset (to avoid training overlap)",
     )
     parser.add_argument(

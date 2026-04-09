@@ -1,0 +1,10 @@
+=======================================================
+  EVALUATION METRICS: MATH_QA 
+=======================================================
+  Total Samples        : 100
+  Correct Answers      : 59
+  Accuracy             : 59.00%
+  Avg Baseline Tokens  : 523.9
+  Avg Tokens Used      : 383.8
+  Token Savings        : 26.73%
+=======================================================

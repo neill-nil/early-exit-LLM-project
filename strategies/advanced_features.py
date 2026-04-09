@@ -45,7 +45,26 @@ def extract_advanced_features(step_dict: dict) -> list[float]:
     # 1. Entropy measure on the newly added text
     entropy = calculate_shannon_entropy(text_added)
     
-    # 2. Repetition Ratio (unique words / total words in cumulative text)
+    # 2. Reasoning Drift (Hallucination Detection via Lexical Jaccard Similarity)
+    # We compare the current step's vocabulary to the previous step's vocabulary.
+    # If Jaccard = 1.0 (exact loop hallucination). If Jaccard = 0.0 (erratic jump hallucination).
+    words_added = text_added.lower().split()
+    
+    # Extract the previous step's text from the cumulative text
+    prev_text = cumulative_text[:len(cumulative_text) - len(text_added)].strip()
+    # We only care about the most recent context (roughly the last step's worth of words)
+    prev_words = prev_text.lower().split()[-len(words_added):] if len(words_added) > 0 else []
+    
+    if not words_added or not prev_words:
+        jaccard_similarity = 0.0
+    else:
+        set_current = set(words_added)
+        set_prev = set(prev_words)
+        intersection = len(set_current.intersection(set_prev))
+        union = len(set_current.union(set_prev))
+        jaccard_similarity = intersection / union if union > 0 else 0.0
+        
+    # 3. Repetition Ratio (unique words / total words in cumulative text)
     words = cumulative_text.split()
     if len(words) > 0:
         unique_words = len(set(words))
@@ -53,9 +72,9 @@ def extract_advanced_features(step_dict: dict) -> list[float]:
     else:
         repetition_ratio = 1.0
         
-    # 3. Step density (tokens per step)
+    # 4. Step density (tokens per step)
     # How verbose was this specific step?
-    words_in_step = len(text_added.split())
+    words_in_step = len(words_added)
     step_density = words_in_step / max(1, num_tokens)
     
-    return [float(entropy), float(repetition_ratio), float(step_density)]
+    return [float(entropy), float(repetition_ratio), float(step_density), float(jaccard_similarity)]

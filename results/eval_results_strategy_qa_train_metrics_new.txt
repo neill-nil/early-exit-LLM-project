@@ -1,0 +1,10 @@
+=======================================================
+  EVALUATION METRICS: STRATEGY_QA (train)
+=======================================================
+  Total Samples        : 100
+  Correct Answers      : 65
+  Accuracy             : 65.00%
+  Avg Baseline Tokens  : 953.6
+  Avg Tokens Used      : 715.0
+  Token Savings        : 25.02%
+=======================================================

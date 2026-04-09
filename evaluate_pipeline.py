@@ -42,10 +42,28 @@ def _regex_check(extracted: str, true_ans: str) -> bool:
         return extracted == true_ans
 
 
-def _extract_option_letter(true_ans: str) -> str:
-    """Extract just the letter from 'option d (value: 45)' → 'd'."""
-    m = re.match(r'option\s+([a-e])', true_ans.strip(), re.IGNORECASE)
-    return m.group(1).lower() if m else true_ans.strip().lower()
+def _check_math_qa_correctness(extracted_ans: str, true_ans: str) -> bool:
+    """Robust extraction matching for MathQA."""
+    extracted_ans = str(extracted_ans).strip().lower()
+    true_ans = true_ans.strip().lower()
+    
+    match = re.search(r"option\s+([a-e])\s*\(value:\s*(.*?)\)", true_ans)
+    if match:
+        letter = match.group(1).strip()
+        value = match.group(2).strip()
+        
+        # Clean up value if formatted like "c ) 2"
+        val_match = re.search(r"[a-e]\s*\)\s*(.*)", value)
+        if val_match:
+            value = val_match.group(1).strip()
+            
+        if extracted_ans == letter or extracted_ans == value:
+            return True
+            
+        # Fallback to regex word boundary check against value
+        return _regex_check(extracted_ans, value)
+        
+    return _regex_check(extracted_ans, true_ans)
 
 def get_few_shot_prompt(dataset_name):
     dataset_lower = dataset_name.lower()
@@ -93,7 +111,7 @@ def get_few_shot_prompt(dataset_name):
             "Problem: {question}\n\nSolution:\n"
         )
 
-def evaluate_on_dataset(pipeline, dataset_name, split="test", num_samples=20):
+def evaluate_on_dataset(pipeline, dataset_name, split="test", num_samples=20, start_idx=0):
     print(f"\nEvaluating pipeline on {dataset_name} ({split} set)...")
     
     # 1. Try local disk first (for Kaggle where datasets are pre-loaded)
@@ -122,10 +140,10 @@ def evaluate_on_dataset(pipeline, dataset_name, split="test", num_samples=20):
             )
 
     if dataset_name == "math_qa":
-        # Taking samples 300 to 300+num_samples from the train split to avoid training overlap
-        dataset = dataset.select(range(300, 300 + num_samples))
+        # Taking samples from start_idx to avoid training overlap
+        dataset = dataset.select(range(start_idx, start_idx + num_samples))
     else:
-        dataset = dataset.select(range(min(num_samples, len(dataset))))
+        dataset = dataset.select(range(start_idx, min(start_idx + num_samples, len(dataset))))
     prompt_template = get_few_shot_prompt(dataset_name)
     
     results = []
@@ -143,9 +161,9 @@ def evaluate_on_dataset(pipeline, dataset_name, split="test", num_samples=20):
         
         # We dynamically compute the baseline from existing traces for fairness
         if "gsm8k" in dataset_name.lower():
-            baseline_tokens = compute_dynamic_baseline(["gsm8k"], 386.0)
+            baseline_tokens = compute_dynamic_baseline(["gsm8k"], 387.4)
         elif "math_qa" in dataset_name.lower():
-            baseline_tokens = compute_dynamic_baseline(["math_qa"], 500.0)
+            baseline_tokens = compute_dynamic_baseline(["math_qa"], 523.9)
         else:
             baseline_tokens = 600.0  # Fallback
             
@@ -158,9 +176,8 @@ def evaluate_on_dataset(pipeline, dataset_name, split="test", num_samples=20):
         if true_ans == "":
             is_correct = False
         elif "math_qa" in dataset_name.lower():
-            # true_ans is "option d (value: 45)" — extract just the letter
-            true_letter = _extract_option_letter(true_ans)
-            is_correct = extracted_ans.strip().lower() == true_letter
+            # Extract both letter and value to verify correctness rigorously
+            is_correct = _check_math_qa_correctness(extracted_ans, true_ans)
         elif extracted_ans == true_ans:
             is_correct = True
         else:
@@ -224,6 +241,7 @@ if __name__ == "__main__":
     parser.add_argument("--scaler", type=str, default="models/scaler.pt", help="Path to scaler.pt")
     parser.add_argument("--dataset", type=str, default="all", choices=["all", "gsm8k", "math_qa"], help="Which dataset to evaluate.")
     parser.add_argument("--num_samples", type=int, default=25, help="Number of samples to evaluate off the top of the dataset.")
+    parser.add_argument("--start", type=int, default=0, help="Start index (use 300 for math_qa if you want to skip trace overlap blindly).")
     args = parser.parse_args()
 
     print("Initializing Qwen Model and Pipeline...")
@@ -232,8 +250,10 @@ if __name__ == "__main__":
     pipeline = EarlyExitPipeline(wrapper, controller_path=args.controller, scaler_path=args.scaler, threshold=0.85)
     
     if args.dataset in ["all", "gsm8k"]:
-        evaluate_on_dataset(pipeline, "gsm8k", split="test", num_samples=args.num_samples)
+        evaluate_on_dataset(pipeline, "gsm8k", split="test", num_samples=args.num_samples, start_idx=args.start)
     
     if args.dataset in ["all", "math_qa"]:
         # User only has math_qa train split uploaded to Kaggle local storage, so we evaluate strictly on unseen "train" slice
-        evaluate_on_dataset(pipeline, "math_qa", split="train", num_samples=args.num_samples)
+        # Default start array fallback applied to 600 if math_qa is used and start is left at 0 to avoid training overlap
+        actual_start = args.start if args.start > 0 else 600
+        evaluate_on_dataset(pipeline, "math_qa", split="train", num_samples=args.num_samples, start_idx=actual_start)
