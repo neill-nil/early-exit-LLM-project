@@ -37,7 +37,8 @@ class EarlyExitPipeline:
         prompt_lower = prompt.lower()
         
         if 'multiple-choice' in prompt_lower or 'options:' in prompt_lower:
-            if re.search(r'\b(?:option|answer)(?:\s+is)?\s+([a-e])\b', text_lower):
+            # Stricter check required: 'correct option is b', 'the answer is b', 'option b is correct'
+            if re.search(r'\b(?:correct\s+option|the\s+answer)\s*(?:is)?\s*([a-e])\b', text_lower) or re.search(r'\boption\s+([a-e])\s+is\s+correct\b', text_lower):
                 return True
         elif "'yes' or 'no'" in prompt_lower or 'logical question' in prompt_lower:
             if re.search(r'\b(yes|no|true|false)\b', text_lower):
@@ -174,6 +175,14 @@ class EarlyExitPipeline:
                     break
                 else:
                     print(f"  >>> Controller confident ({prob*100:.2f}%), but answer not fully printed. Running another step...")
+                    
+            # --- Hallucination Pruning ---
+            # If the model is caught in an infinite loop e.g. "re re re re", prob will plummet to near 0.
+            if step_idx > 10 and prob < 0.10:
+                print(f"  >>> HALLUCINATION CUTOFF TRIGGERED (Confidence {prob*100:.2f}% < 10.00%). Pruning trace to save tokens.")
+                early_exit_triggered = True
+                stopped_at_step = step_idx
+                break
                 
             if step_info["is_eos"]:
                 break
