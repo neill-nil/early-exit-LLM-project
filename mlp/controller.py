@@ -1,6 +1,6 @@
 import torch
 from sentence_transformers import SentenceTransformer
-from .base import EarlyExitStrategy
+from utils.base_strategy import EarlyExitStrategy
 from typing import Dict, Any
 import re
 
@@ -25,7 +25,7 @@ class LearningBasedController(EarlyExitStrategy):
         scaler_path: str = "models/scaler.pt",
         threshold: float = 0.85,
     ):
-        from train_controller import EarlyExitMLP   # local import to avoid circular deps
+        from mlp.train_controller import EarlyExitMLP   # absolute import to safely run from root
 
         self.threshold = threshold
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -39,7 +39,8 @@ class LearningBasedController(EarlyExitStrategy):
         self.std_scalars  = scaler["std"].to(self.device).float()
 
         print("Loading Early-Exit MLP Controller...")
-        self.controller = EarlyExitMLP(input_dim=386).to(self.device)
+        dynamic_input_dim = 384 + len(self.mean_scalars)
+        self.controller = EarlyExitMLP(input_dim=dynamic_input_dim).to(self.device)
         self.controller.load_state_dict(
             torch.load(controller_path, map_location=self.device)
         )

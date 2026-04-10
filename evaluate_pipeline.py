@@ -210,21 +210,6 @@ def evaluate_on_dataset(pipeline, dataset_name, split="test", num_samples=20, st
         else:
             # Word-boundary regex check to avoid "60" matching "600"
             is_correct = _regex_check(extracted_ans, true_ans)
-
-        elif "math_qa" in dataset_name.lower():
-            # get_true_answer returns "option c (value: 24)" for MathQA.
-            # The pipeline's extract_final_answer returns just the letter (e.g. "c").
-            # We must compare letter-to-letter to avoid a guaranteed 0% accuracy.
-            letter_match = _re.search(r'option\s+([a-e])', true_ans, _re.IGNORECASE)
-            true_letter = letter_match.group(1).lower() if letter_match else true_ans.strip()
-            is_correct = (extracted_ans == true_letter)
-
-        elif extracted_ans == true_ans:
-            is_correct = True  # Exact match is always correct
-
-        else:
-            # Fallback: substring/numeric check to avoid "60" matching "600"
-            is_correct = bool(_re.search(rf"(?<![\d.])" + _re.escape(true_ans) + r"(?![\d.])", extracted_ans))
             
         if is_correct:
             correct_extractions += 1

@@ -1,7 +1,6 @@
 import json
 import os
 import re
-import google.generativeai as genai
 import time
 from tqdm import tqdm
 from datasets import load_dataset, load_from_disk

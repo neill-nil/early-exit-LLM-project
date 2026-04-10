@@ -1,5 +1,7 @@
 torch
 transformers
+accelerate
+sentence-transformers
 numpy
 scikit-learn
 tqdm

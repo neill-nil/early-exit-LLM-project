@@ -6,63 +6,94 @@ Large Language Models (LLMs) often achieve state-of-the-art performance on compl
 This project implements a model-agnostic **Adaptive Reasoning Control System** that dynamically determines optimal stopping points during generation. By externalizing the stopping decision to a synchronous, lightweight neural network (MLP) trained on semantic embeddings of reasoning traces, we can trigger an "Early Exit." This safely truncates redundant token generation without modifying the base model's pre-trained weights.
 
 ### Key Achievements
-- **GSM8K Benchmark:** Retained **92.0% logical accuracy** while saving **17.51%** of computing tokens against the unconstrained baseline.
-- **MathQA Benchmark:** Maintained **76.0% accuracy** while reducing generation overhead by **14.8%**.
-- **Model Agnosticism:** Operates entirely independently of the core reasoning model's parameter weights (`Qwen2.5-Math-7B-Instruct`), requiring absolutely no fine-tuning of the billion-parameter LLM matrices.
+- **GSM8K:** Retained **90.00% accuracy** while saving **18.99%** of generated tokens.
+- **MathQA:** Maintained **59.00% accuracy** while reducing generation overhead by **39.76%**.
+- **StrategyQA:** Maintained **65.00% accuracy** while saving **25.02%** of generated tokens.
+- **Model Agnosticism:** Operates entirely independently of the core reasoning model's parameter weights. Supports both `Qwen2.5-Math-7B-Instruct` (for math) and `OLMo-3-7B-Think` (for multi-hop logic), requiring absolutely no fine-tuning of the billion-parameter LLM weights.
 
 ---
 
 ## Repository Structure & Working Pipeline
 
-The repository is modularly structured into five distinct operational phases. Each pipeline script transitions the project from raw datasets to an independently-acting adaptive inference loop. The transition ensures decoupling between computationally heavy generation and lightweight neural training.
+The repository is modularly structured into distinct operational phases. Each pipeline script transitions the project from raw datasets to an independently-acting adaptive inference loop.
+
+```
+Early_exit_project/
+├── main_generate_traces.py       # Phase 1: Trace generation with LLM judge
+├── mlp/
+│   ├── prepare_features.py       # Phase 2: Feature extraction & embedding
+│   ├── train_controller.py       # Phase 3: MLP controller training
+│   ├── controller.py             # MLP inference controller (strategy)
+│   └── advanced_features.py      # Advanced lexical feature extraction
+├── early_exit_inference.py       # Phase 4: Adaptive inference engine
+├── evaluate_pipeline.py          # Phase 5: Full evaluation orchestrator
+├── models/
+│   ├── llm_wrapper.py            # HuggingFace LLM wrapper
+│   ├── early_exit_controller.pt  # Standard MLP weights (386-dim)
+│   ├── early_exit_controller_adv.pt  # Advanced MLP weights (390-dim)
+│   ├── scaler.pt                 # Standard feature scaler
+│   └── scaler_adv.pt             # Advanced feature scaler
+├── consistency/
+│   └── controller.py             # Consistency-based exit strategy
+├── difficulty/
+│   └── static_budget.py          # Static budget exit strategy
+├── utils/
+│   ├── base_strategy.py          # Abstract base class for strategies
+│   └── evaluate_baseline.py      # Unconstrained baseline evaluation
+├── data/
+│   ├── traces/                   # Generated reasoning traces (JSON)
+│   └── features/                 # Extracted feature matrices (NumPy)
+├── results/                      # Evaluation metrics & detailed logs
+└── requirements.txt
+```
 
 ### 1. Data Collection & Trace Generation (`main_generate_traces.py`)
-To train an external controller, we first need empirical data representing how the LLM natively reasons and when it actually solves problems. This script is responsible for building our foundational training dataset.
-- Loads mathematical datasets (e.g., `gsm8k`, `math_qa`) via the HuggingFace `datasets` API.
-- Solicits step-by-step generations from the LLM, chunked into boundaries of roughly 15-20 tokens per frame.
-- **Verification Oracle:** At each 15-20 token step, a deterministic regex-driven oracle inspects the trajectory to see if the ground-truth mathematical answer has appeared within the context boundaries.
-- The oracle intelligently handles different problem distributions, supporting strict exact-match arithmetic boundaries for GSM8K and alphabetical option extraction for MathQA.
-- Saves detailed JSON traces containing cumulative text, specific token counts, and binary correctness labels for every single intermediate step. This results in our ground truth dataset.
+To train an external controller, we first need empirical data representing how the LLM natively reasons and when it actually solves problems.
+- Loads datasets (`gsm8k`, `math_qa`, `ChilleD/StrategyQA`) via the HuggingFace `datasets` API.
+- Solicits step-by-step generations from the base LLM, chunked into boundaries of ~20 tokens per step.
+- **LLM Judge Verification:** At each 20-token step, a secondary `Qwen2.5-3B-Instruct` judge model evaluates whether the reasoning trace has arrived at the correct answer. This replaces simple regex matching to handle nuanced multi-step reasoning.
+- Supports different problem domains: exact-match arithmetic for GSM8K, alphabetical option extraction for MathQA, and boolean Yes/No for StrategyQA.
+- Saves detailed JSON traces containing cumulative text, token counts, and binary correctness labels for every intermediate step.
 
-### 2. Feature Embedding & Scaling (`prepare_features.py`)
-Standard neural networks cannot ingest raw text strings. We mathematically translate the text trajectories into dense vector representations.
-- Loads the raw JSON traces, dropping instances where the model catastrophically failed or hallucinated the answer prematurely (specifically traces solved in Step $\le$ 2).
-- Processes every semantic step sequentially through a frozen `sentence-transformers/all-MiniLM-L6-v2` encoder. This specific sentence transformer was selected due to its incredibly fast processing speed, ensuring embedding latency does not bottleneck the reasoning pipeline.
-- Concatenates the 384-dimensional dense semantic embedding with two positional scalars: the `step_index` and the local `num_tokens` generated per step. This combination allows the model to understand *where* in the reasoning path it currently resides.
-- Outputs the finalized scaled feature matrix `X.npy` and binary label array `y.npy`.
+### 2. Feature Embedding & Scaling (`mlp/prepare_features.py`)
+Standard neural networks cannot ingest raw text strings. We translate the text trajectories into dense vector representations.
+- Loads the raw JSON traces, filtering out incorrectly-solved instances and deduplicating by question ID.
+- Processes every step through a frozen `sentence-transformers/all-MiniLM-L6-v2` encoder, producing a 384-dimensional dense semantic embedding.
+- Concatenates the embedding with two positional scalars: `step_index` and `num_tokens` generated per step, yielding a 386-dimensional standard feature vector.
+- **Advanced mode** (`--use_advanced_features`): Appends four additional lexical diagnostics (chunk entropy, repetition ratio, step density, Jaccard similarity), yielding a 390-dimensional feature vector.
+- Outputs the finalized feature matrix `X.npy` (or `X_adv.npy`) and binary label array `y.npy` (or `y_adv.npy`) to `data/features/`.
 
-### 3. Controller Training (`train_controller.py`)
-We map the dense semantic embeddings to a binarized confidence state representing "solved" vs "unsolved".
-- Implements a Multi-Layer Perceptron (MLP) architecture projecting from $\mathbb{R}^{386} \rightarrow \mathbb{R}^1$.
-- **Architecture Structure:** `Linear(128)` $\rightarrow$ `BatchNorm1d` $\rightarrow$ `Dropout(0.3)` $\rightarrow$ `Linear(64)` $\rightarrow$ `BatchNorm1d` $\rightarrow$ `Dropout(0.3)` $\rightarrow$ `Linear(1)` $\rightarrow$ `Sigmoid`.
-- Normalizes and scales the concatenated scalar parameters to prevent covariate shift across features with drastically different standard deviations.
-- Defends against heavy dataset class-imbalance (where naturally 90% of intermediate sequence steps are 'incorrect' or 'unsolved') utilizing thresholded Precision/Recall monitoring across 20 epochs using an `AdamW` optimizer and a `BCEloss` penalty.
-- Exports the highest-performing network weights to `models/early_exit_controller.pt` and the fitted standard scaler states to `models/scaler.pt`.
+### 3. Controller Training (`mlp/train_controller.py`)
+Maps the dense semantic embeddings to a binarized confidence state representing "solved" vs "unsolved."
+- Implements a Multi-Layer Perceptron (MLP) architecture: `Linear(input_dim, 128)` → `BatchNorm1d` → `ReLU` → `Dropout(0.3)` → `Linear(128, 32)` → `BatchNorm1d` → `ReLU` → `Dropout(0.3)` → `Linear(32, 1)` → `Sigmoid`.
+- Input dimension is 386 (standard) or 390 (advanced).
+- Z-score normalizes scalar features (dimensions 384+) using training set statistics.
+- Trains for 20 epochs using the `Adam` optimizer with `BCELoss`, saving the best checkpoint by validation loss.
+- Exports weights to `models/early_exit_controller.pt` (or `_adv.pt`) and scaler states to `models/scaler.pt` (or `_adv.pt`).
 
 ### 4. Adaptive Inference Execution (`early_exit_inference.py`)
-This module provides the central user instantiation wrapper. It combines the foundational reasoning LLM (`HuggingFaceLLMWrapper`) and the trained Early-Exit Controller to execute dynamic, real-time computational halting.
-- The LLM begins its Chain-of-Thought process, returning execution focus back to the parent script every ~20 tokens.
-- The controller dynamically vector-embeds the running text history and passes it through the pre-loaded MLP. 
-- If the resultant confidence breaches the user-defined safety threshold ($\tau \ge 0.85$):
-  - A rigorous, format-enforcing protocol (`has_clear_answer`) verifies the model hasn't just printed the expected number in passing without proper conclusive framing (e.g., verifying `\boxed{}` formatting or "the final answer is" verbiage).
-  - If formatted successfully, a physical runtime token interruption is passed to the loop, actively terminating GPU compute requirements and exiting mathematically early.
-  - If unformatted, the continuous generation skips the exit instruction, effectively forcing the LLM to complete its current reasoning step.
+Combines the base reasoning LLM and the trained Early-Exit Controller for dynamic, real-time computational halting.
+- The LLM begins its Chain-of-Thought process, returning focus back every ~20 tokens.
+- The controller dynamically embeds the running text history and passes it through the pre-loaded MLP.
+- If the confidence breaches the threshold ($\tau \ge 0.85$) and a clear answer format is detected (`\boxed{}`, "the final answer is", or option letters), a physical runtime interruption terminates generation early.
+- **Hallucination pruning:** If confidence drops below 10% after step 20, generation is forcibly aborted to prevent degenerate loops.
+- Supports modular strategy injection via the `strategy` parameter, allowing seamless switching between MLP, Consistency, and Static Budget approaches.
 
 ### 5. Empirical Evaluation & Testing (`evaluate_pipeline.py`)
-An automated orchestrator to thoroughly empirically quantify the Token Savings Ratio (TSR) and Relative Accuracy Retained (RAR).
-- Re-initializes the `EarlyExitPipeline` over entirely unseen `test` datasets (bypassing caching risks).
-- Handles robust offline-loading fallbacks for Kaggle computing limitations.
-- Analyzes actual truncated token expenditure against the unconstrained historical trace empirical baselines (e.g., ~386 total tokens expected for GSM8K un-truncated).
-- Captures absolute accuracy and token reduction distributions, intelligently exporting detailed evaluation JSON files reflecting precisely where the early-exit controller interrupted execution.
+An automated orchestrator to quantify Token Savings Ratio (TSR) and accuracy.
+- Supports `--strategy mlp` (default) and `--strategy consistency` for switching between exit approaches.
+- Handles three datasets: `gsm8k` (test split), `math_qa` (train split, offset 600+), `strategy_qa` (train split, offset 600+) to ensure zero overlap with training data.
+- Automatically selects the appropriate base model: `Qwen2.5-Math-7B-Instruct` for math datasets, `OLMo-3-7B-Think` for StrategyQA.
+- Computes baseline token expenditure dynamically from training traces and exports detailed evaluation JSON files.
 
 ---
 
 ## Hardware and Execution Environments
 
-Because autoregressive language modeling is fundamentally memory-bandwidth bound, the generation phase of this project is highly sensitive to hardware configurations.
-- **Phase 1 Trace Generation:** Strictly requires sufficient VRAM to hold the `Qwen2.5-Math-7B-Instruct` matrices. Generation was natively orchestrated on Kaggle notebook instances utilizing dual NVIDIA T4 (15GB) GPUs configured with `bfloat16` weights. 
-- **Phase 3 Controller Training:** The MLP training operates exclusively on pre-calculated NumPy vectors, resulting in extraordinarily small overhead. This execution phase runs comfortably on any standard CPU cluster within minutes.
-- **Phase 4 Interfacing:** Embedding computation per step dynamically offloads to CUDA cores during testing to minimize bottleneck delays.
+Because autoregressive language modeling is fundamentally memory-bandwidth bound, the generation phase is highly sensitive to hardware configurations.
+- **Trace Generation:** Requires sufficient VRAM for `Qwen2.5-Math-7B-Instruct` + `Qwen2.5-3B-Instruct` (judge). Executed on Kaggle instances with NVIDIA A100 (40GB) / T4 (15GB) GPUs with `bfloat16` precision.
+- **Controller Training:** The MLP trains exclusively on pre-calculated NumPy vectors. Runs comfortably on any CPU within minutes.
+- **Inference:** Embedding computation per step offloads dynamically to available CUDA cores.
 
 ---
 
@@ -74,51 +105,102 @@ git clone https://github.com/neill-nil/early-exit-LLM-project.git
 cd early-exit-LLM-project
 
 # Install dependencies 
-# We explicitly recommend setting up a virtual environment (e.g. conda or venv)
 conda create -n early-exit python=3.10
 conda activate early-exit
-
-# Install structural libraries
 pip install -r requirements.txt
 ```
 
 ### Required Dependencies
-The pipeline demands the following primary dependencies:
-- `torch` (PyTorch for MLP propagation)
-- `transformers` & `accelerate` (Hugging Face LLM interfacing)
-- `sentence-transformers` (Execution of dense encoding)
-- `datasets` (Automated benchmark test-train data loading)
-- `scikit-learn` & `numpy` (Mathematical matrix scaling calculations)
+- `torch` — MLP propagation
+- `transformers` & `accelerate` — HuggingFace LLM interfacing
+- `sentence-transformers` — Dense semantic encoding
+- `datasets` — Benchmark data loading
+- `scikit-learn` & `numpy` — Feature scaling
+- `tqdm` — Progress bars
 
 ---
 
-## Usage Guide & Command Line Automation
+## Usage Guide & Commands
 
-To organically replicate the experimental behaviors from start to finish:
+### Step 1: Generate reasoning traces
+```bash
+python main_generate_traces.py --dataset gsm8k --start 0 --end 500
+python main_generate_traces.py --dataset math_qa --start 0 --end 500
+python main_generate_traces.py --dataset ChilleD/StrategyQA --start 0 --end 500
+```
+> **Note:** Requires GPU instances. Traces are saved to `data/traces/`.
 
-**Step 1: Generate reasoning behaviors on the training set:**
+### Step 2: Extract features from traces
 ```bash
-python main_generate_traces.py --dataset gsm8k --start 0 --end 200
-```
-*Note: Ensure High-RAM or GPU instances are attached. Results are exported synchronously inside the `/data/traces` directory.*
+# Standard features (386-dim)
+python mlp/prepare_features.py
 
-**Step 2: Vectorize the semantic text chunks:**
-```bash
-python prepare_features.py
+# Advanced features (390-dim, includes entropy/repetition metrics)
+python mlp/prepare_features.py --use_advanced_features
 ```
 
-**Step 3: Train the controller logic and fit standardization:**
+### Step 3: Train the MLP controller
 ```bash
-python train_controller.py
-```
-*(Yields `early_exit_controller.pt` mapped inside the explicitly generated `/models/` directory)*
+# Standard model
+python mlp/train_controller.py
 
-**Step 4: Execute automated pipeline empirical testing:**
-To test exact threshold evaluations over independent dataset validations:
-```bash
-python evaluate_pipeline.py --dataset gsm8k --controller models/early_exit_controller.pt --scaler models/scaler.pt
+# Advanced model
+python mlp/train_controller.py --use_advanced_features
 ```
-To evaluate against mathematical multiple-choice problems:
+> Outputs: `models/early_exit_controller.pt` and `models/scaler.pt` (or `_adv` variants).
+
+### Step 4: Evaluate the pipeline
+
+**MLP strategy (default) on all datasets:**
 ```bash
-python evaluate_pipeline.py --dataset math_qa --controller models/early_exit_controller.pt --scaler models/scaler.pt
+python evaluate_pipeline.py --dataset all --num_samples 100 --strategy mlp
 ```
+
+**MLP with advanced controller:**
+```bash
+python evaluate_pipeline.py --dataset all --num_samples 100 --strategy mlp \
+    --controller models/early_exit_controller_adv.pt \
+    --scaler models/scaler_adv.pt
+```
+
+**Per-dataset evaluation:**
+```bash
+# GSM8K (test split)
+python evaluate_pipeline.py --dataset gsm8k --num_samples 100 --strategy mlp
+
+# MathQA (train split, auto-offset to index 600+)
+python evaluate_pipeline.py --dataset math_qa --num_samples 100 --strategy mlp
+
+# StrategyQA (train split, auto-offset to index 600+)
+python evaluate_pipeline.py --dataset strategy_qa --num_samples 100 --strategy mlp
+```
+
+**Consistency strategy:**
+```bash
+python evaluate_pipeline.py --dataset gsm8k --num_samples 30 --strategy consistency
+```
+
+### Key CLI Arguments for `evaluate_pipeline.py`
+| Argument | Default | Description |
+|---|---|---|
+| `--strategy` | `mlp` | Exit strategy: `mlp` or `consistency` |
+| `--dataset` | `all` | Dataset: `all`, `gsm8k`, `math_qa`, or `strategy_qa` |
+| `--num_samples` | `25` | Number of evaluation samples |
+| `--start` | `0` | Start index (auto-set to 600 for math_qa/strategy_qa) |
+| `--controller` | `models/early_exit_controller.pt` | Path to MLP weights |
+| `--scaler` | `models/scaler.pt` | Path to scaler weights |
+| `--threshold` | `0.85` | MLP confidence threshold |
+
+---
+
+## Models & Checkpoints
+
+Pre-trained controller weights and scalers are available at:
+- **HuggingFace:** [Neillmate/early-exit-controller](https://huggingface.co/Neillmate/early-exit-controller/tree/main)
+
+| File | Description | Input Dim |
+|---|---|---|
+| `early_exit_controller.pt` | Standard MLP controller | 386 |
+| `early_exit_controller_adv.pt` | Advanced MLP controller (with lexical features) | 390 |
+| `scaler.pt` | Scalar feature normalizer (standard) | — |
+| `scaler_adv.pt` | Scalar feature normalizer (advanced) | — |
