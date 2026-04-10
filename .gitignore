@@ -17,7 +17,6 @@ __pycache__/
 data/
 *.ckpt
 *.safetensors
-*.pt
 *.pth
 *.h5
 *.bin
