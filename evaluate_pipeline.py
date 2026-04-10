@@ -1,11 +1,11 @@
 import json
 import os
-import re
-import glob
+import re as _re
 from tqdm import tqdm
 from datasets import load_dataset
 from models.llm_wrapper import HuggingFaceLLMWrapper
 from early_exit_inference import EarlyExitPipeline
+<<<<<<< HEAD
 from main_generate_traces import get_question, get_true_answer
 
 def compute_dynamic_baseline(dataset_identifiers: list, default_baseline: float) -> float:
@@ -64,6 +64,9 @@ def _check_math_qa_correctness(extracted_ans: str, true_ans: str) -> bool:
         return _regex_check(extracted_ans, value)
         
     return _regex_check(extracted_ans, true_ans)
+=======
+from main_generate_traces import get_question, get_true_answer, check_intermediate_correctness_llm as check_intermediate_correctness
+>>>>>>> origin/dev-consistency-work
 
 def get_few_shot_prompt(dataset_name):
     dataset_lower = dataset_name.lower()
@@ -114,36 +117,42 @@ def get_few_shot_prompt(dataset_name):
 def evaluate_on_dataset(pipeline, dataset_name, split="test", num_samples=20, start_idx=0):
     print(f"\nEvaluating pipeline on {dataset_name} ({split} set)...")
     
-    # 1. Try local disk first (for Kaggle where datasets are pre-loaded)
-    local_path = f"data/{dataset_name.split('/')[-1]}"
-    dataset = None
-
-    if os.path.exists(local_path):
-        try:
+    try:
+        # Check if local data exists first, exactly like traces generation
+        local_path = f"data/{dataset_name.split('/')[-1]}"
+        if os.path.exists(local_path):
             from datasets import load_from_disk
             dataset = load_from_disk(local_path)[split]
-            print(f"Loaded from local disk: {local_path}")
-        except Exception as e:
-            print(f"Local load failed ({e}), trying HuggingFace...")
-
-    # 2. Fall back to HuggingFace download (always use trust_remote_code=True)
-    if dataset is None:
-        try:
+        else:
             if dataset_name == "gsm8k":
                 dataset = load_dataset(dataset_name, "main", trust_remote_code=True)[split]
             else:
                 dataset = load_dataset(dataset_name, trust_remote_code=True)[split]
-            print(f"Loaded from HuggingFace: {dataset_name}")
-        except Exception as e:
-            raise RuntimeError(
-                f"Could not load '{dataset_name}' from disk or HuggingFace. Error: {e}"
-            )
+                
+        if dataset_name == "math_qa":
+            # Taking samples 300 to 300+num_samples from the train split to avoid training overlap
+            dataset = dataset.select(range(300, 300 + num_samples))
+        else:
+            dataset = dataset.select(range(min(num_samples, len(dataset))))
+            
+    except Exception as e:
+        print(f"Hugging Face fetch failed ({e}). Attempting offline load from data/{dataset_name.split('/')[-1]}...")
+        from datasets import load_from_disk
+        dataset = load_from_disk(f"data/{dataset_name.split('/')[-1]}")[split]
+        
+        if dataset_name == "math_qa":
+            dataset = dataset.select(range(300, 300 + num_samples))
+        else:
+            dataset = dataset.select(range(min(num_samples, len(dataset))))
 
+<<<<<<< HEAD
     if dataset_name == "math_qa":
         # Taking samples from start_idx to avoid training overlap
         dataset = dataset.select(range(start_idx, start_idx + num_samples))
     else:
         dataset = dataset.select(range(start_idx, min(start_idx + num_samples, len(dataset))))
+=======
+>>>>>>> origin/dev-consistency-work
     prompt_template = get_few_shot_prompt(dataset_name)
     
     results = []
@@ -157,13 +166,19 @@ def evaluate_on_dataset(pipeline, dataset_name, split="test", num_samples=20, st
         prompt = prompt_template.format(question=question)
         
         MAX_STEPS = 60
-        STEP_TOKENS = 20
+        STEP_TOKENS = 40
         
-        # We dynamically compute the baseline from existing traces for fairness
+        # We assume a dataset-specific average baseline derived from the unconstrained training traces
         if "gsm8k" in dataset_name.lower():
+<<<<<<< HEAD
             baseline_tokens = compute_dynamic_baseline(["gsm8k"], 387.4)
         elif "math_qa" in dataset_name.lower():
             baseline_tokens = compute_dynamic_baseline(["math_qa"], 523.9)
+=======
+            baseline_tokens = 386.0  # Empirical average from GSM8K traces
+        elif "math_qa" in dataset_name.lower():
+            baseline_tokens = 500.0  # Empirical average from MathQA traces
+>>>>>>> origin/dev-consistency-work
         else:
             baseline_tokens = 600.0  # Fallback
             
@@ -172,9 +187,10 @@ def evaluate_on_dataset(pipeline, dataset_name, split="test", num_samples=20, st
         actual_tokens_used = exit_result["total_tokens"]
         extracted_ans = exit_result["extracted_answer"].strip().lower()
         
-        # Check correctness
+        # ── Check correctness (dataset-aware) ─────────────────────────────
         if true_ans == "":
             is_correct = False
+<<<<<<< HEAD
         elif "math_qa" in dataset_name.lower():
             # Extract both letter and value to verify correctness rigorously
             is_correct = _check_math_qa_correctness(extracted_ans, true_ans)
@@ -183,8 +199,26 @@ def evaluate_on_dataset(pipeline, dataset_name, split="test", num_samples=20, st
         else:
             # Word-boundary regex check to avoid "60" matching "600"
             is_correct = _regex_check(extracted_ans, true_ans)
+=======
+>>>>>>> origin/dev-consistency-work
 
-        if is_correct: correct_extractions += 1
+        elif "math_qa" in dataset_name.lower():
+            # get_true_answer returns "option c (value: 24)" for MathQA.
+            # The pipeline's extract_final_answer returns just the letter (e.g. "c").
+            # We must compare letter-to-letter to avoid a guaranteed 0% accuracy.
+            letter_match = _re.search(r'option\s+([a-e])', true_ans, _re.IGNORECASE)
+            true_letter = letter_match.group(1).lower() if letter_match else true_ans.strip()
+            is_correct = (extracted_ans == true_letter)
+
+        elif extracted_ans == true_ans:
+            is_correct = True  # Exact match is always correct
+
+        else:
+            # Fallback: substring/numeric check to avoid "60" matching "600"
+            is_correct = bool(_re.search(rf"(?<![\d.])" + _re.escape(true_ans) + r"(?![\d.])", extracted_ans))
+            
+        if is_correct:
+            correct_extractions += 1
             
         total_baseline_tokens += baseline_tokens
         total_exit_tokens += actual_tokens_used
@@ -210,46 +244,62 @@ def evaluate_on_dataset(pipeline, dataset_name, split="test", num_samples=20, st
     with open(output_filename, "w") as f:
         json.dump(results, f, indent=4)
         
-    report_lines = [
-        "=" * 55,
-        f"  EVALUATION METRICS: {dataset_name.upper()} ({split})",
-        "=" * 55,
-        f"  Total Samples        : {num_samples}",
-        f"  Correct Answers      : {correct_extractions}",
-        f"  Accuracy             : {avg_accuracy*100:.2f}%",
-        f"  Avg Baseline Tokens  : {total_baseline_tokens / num_samples:.1f}",
-        f"  Avg Tokens Used      : {total_exit_tokens / num_samples:.1f}",
-        f"  Token Savings        : {token_savings_pct:.2f}%",
-        "=" * 55,
-    ]
-    report = "\n".join(report_lines)
-    print(report)
-    print(f"  Detailed logs  → {output_filename}")
-
-    # Save metrics to txt
-    txt_filename = output_filename.replace(".json", "_metrics.txt")
-    with open(txt_filename, "w") as f:
-        f.write(report + "\n")
-    print(f"  Metrics report → {txt_filename}")
-
+    print("-" * 50)
+    print(f"Dataset: {dataset_name.upper()}")
+    print(f"Final Accuracy: {avg_accuracy*100:.2f}%")
+    print(f"Total Tokens Saved vs Historical Trace Average ({total_baseline_tokens / num_samples:.1f}): {token_savings_pct:.2f}%")
+    print(f"Average Tokens Generated Before Exit: {total_exit_tokens / num_samples:.1f}")
+    print(f"Detailed logs saved to: {output_filename}")
+    print("-" * 50)
+    
     return results
 
 if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser(description="Evaluate Early Exit Pipeline")
-    parser.add_argument("--controller", type=str, default="models/early_exit_controller.pt", help="Path to early_exit_controller.pt")
-    parser.add_argument("--scaler", type=str, default="models/scaler.pt", help="Path to scaler.pt")
-    parser.add_argument("--dataset", type=str, default="all", choices=["all", "gsm8k", "math_qa"], help="Which dataset to evaluate.")
-    parser.add_argument("--num_samples", type=int, default=25, help="Number of samples to evaluate off the top of the dataset.")
+    parser.add_argument(
+        "--strategy", type=str, default="mlp", choices=["mlp", "consistency"],
+        help="Which early-exit strategy to use: 'mlp' (Approach 1) or 'consistency' (Approach 3)."
+    )
+    # MLP-specific arguments
+    parser.add_argument("--controller", type=str, default="models/early_exit_controller.pt", help="Path to early_exit_controller.pt (mlp only)")
+    parser.add_argument("--scaler",     type=str, default="models/scaler.pt",                help="Path to scaler.pt (mlp only)")
+    parser.add_argument("--threshold",  type=float, default=0.85,                            help="MLP confidence threshold (mlp only)")
+    # Consistency-specific arguments
+    parser.add_argument("--consistency-threshold", type=int, default=2, help="Consecutive stable answers before exit (consistency only)")
+    parser.add_argument("--judge-model", type=str, default="Qwen/Qwen2.5-3B-Instruct",      help="HF model name for the judge (consistency only)")
+    # Shared arguments
+    parser.add_argument("--dataset",    type=str, default="all", choices=["all", "gsm8k", "math_qa"], help="Dataset to evaluate")
+    parser.add_argument("--num_samples", type=int, default=25,                               help="Number of test samples")
     parser.add_argument("--start", type=int, default=0, help="Start index (use 300 for math_qa if you want to skip trace overlap blindly).")
     args = parser.parse_args()
 
-    print("Initializing Qwen Model and Pipeline...")
+    print("Initializing Qwen2.5-Math-7B-Instruct (reasoner)...")
     wrapper = HuggingFaceLLMWrapper(model_name="Qwen/Qwen2.5-Math-7B-Instruct")
-    # You can tweak the confidence threshold. Higher = safer but less token savings.
-    pipeline = EarlyExitPipeline(wrapper, controller_path=args.controller, scaler_path=args.scaler, threshold=0.85)
-    
+
+    # ── Build the selected strategy ──────────────────────────────────────────
+    if args.strategy == "mlp":
+        from strategies.learning_based import LearningBasedController
+        print(f"Strategy: MLP (threshold={args.threshold})")
+        strategy = LearningBasedController(
+            controller_path=args.controller,
+            scaler_path=args.scaler,
+            threshold=args.threshold,
+        )
+    else:  # consistency
+        from strategies.consistency import ConsistencyController
+        print(f"Strategy: Consistency (threshold={args.consistency_threshold}, judge={args.judge_model})")
+        judge_wrapper = HuggingFaceLLMWrapper(model_name=args.judge_model)
+        strategy = ConsistencyController(
+            judge_wrapper=judge_wrapper,
+            consistency_threshold=args.consistency_threshold,
+            dataset_name=args.dataset if args.dataset != "all" else "gsm8k",
+        )
+
+    pipeline = EarlyExitPipeline(wrapper, strategy=strategy)
+
     if args.dataset in ["all", "gsm8k"]:
+<<<<<<< HEAD
         evaluate_on_dataset(pipeline, "gsm8k", split="test", num_samples=args.num_samples, start_idx=args.start)
     
     if args.dataset in ["all", "math_qa"]:
@@ -257,3 +307,10 @@ if __name__ == "__main__":
         # Default start array fallback applied to 600 if math_qa is used and start is left at 0 to avoid training overlap
         actual_start = args.start if args.start > 0 else 600
         evaluate_on_dataset(pipeline, "math_qa", split="train", num_samples=args.num_samples, start_idx=actual_start)
+=======
+        evaluate_on_dataset(pipeline, "gsm8k", split="test", num_samples=args.num_samples)
+
+    if args.dataset in ["all", "math_qa"]:
+        # math_qa: evaluate on an unseen train slice to avoid training overlap
+        evaluate_on_dataset(pipeline, "math_qa", split="train", num_samples=args.num_samples)
+>>>>>>> origin/dev-consistency-work
