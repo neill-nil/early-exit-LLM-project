@@ -32,8 +32,15 @@ def load_traces(file_paths: list, dataset_label: str = ""):
             continue
         
         print(f"Loading traces from {file_name}...")
-        with open(file_path, "r") as f:
-            data = json.load(f)
+        try:
+            with open(file_path, "r") as f:
+                data = json.load(f)
+        except json.decoder.JSONDecodeError as e:
+            print(f"  [WARNING] Skipping {file_path} because it is corrupted or incomplete: {e}")
+            continue
+        except Exception as e:
+            print(f"  [WARNING] Skipping {file_path} due to error: {e}")
+            continue
         
         kept, skipped_incorrect, skipped_dup = 0, 0, 0
         for item in data:
@@ -147,10 +154,11 @@ if __name__ == "__main__":
     all_traces = gsm8k_traces + mathqa_traces + strategyqa_traces
     
     if not all_traces:
-        print("No valid traces found. Please generate traces first.")
+        print("No valid traces found after filtering. Please generate traces first.")
         exit()
     
     print(f"Combined dataset: {len(all_traces)} total samples ({len(gsm8k_traces)} GSM8K + {len(mathqa_traces)} MathQA + {len(strategyqa_traces)} StrategyQA)")
+
     
     print(f"Advanced features enabled: {args.use_advanced_features}")
     X, y = extract_features(all_traces, use_advanced_features=args.use_advanced_features)
