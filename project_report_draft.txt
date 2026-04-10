@@ -1,0 +1,75 @@
+================================================================================
+Early-Exit Project Report Draft
+================================================================================
+
+1. PROJECT IDEA AND MOTIVATION / OBJECTIVES
+Large Language Models (LLMs) like Qwen2.5-Math-7B-Instruct exhibit profound capabilities in complex reasoning, particularly when utilizing step-by-step "Chain-of-Thought" (CoT) prompting. However, generating these extensive reasoning traces is computationally expensive and slow autoregressive token generation limits their real-world efficiency.
+
+The core motivation for this project is that not all problems require the same amount of computational budget. A simple word problem might be solved unequivocally by step 3, while the LLM natively rambles up to step 30 (generating hundreds of unnecessary tokens) purely to satisfy its learned conversational patterns before finally outputting an `EOS` token. 
+
+Our objective is to design and implement an "Adaptive Computation Strategy" in the form of a Learning-Based Early-Exit Controller. Instead of letting the LLM generate until exhaustion, our lightweight controller operates synchronously during the decoding process. By dynamically analyzing the running text trace and the step length, the controller attempts to predict when the LLM has already generated the correct, final answer. If a set confidence threshold is breached, the controller triggers a hard "Early Exit," explicitly halting further token generation, thereby saving enormous amounts of compute and GPU time while perfectly preserving the accuracy of the underlying LLM.
+
+--------------------------------------------------------------------------------
+
+2. BACKGROUND AND RELATED WORK
+Adaptive computation in neural networks has historically focused on early-exit mechanisms within the depth of the transformer layers themselves (i.e., skipping layers if a classifier attached to intermediate hidden states reaches high confidence). However, these architectures require fundamental modifications to the pre-trained weights or require custom serving infrastructure.
+
+Recent literature shifted focus to "Generation-Level" early exits for generative AI, particularly in CoT reasoning tasks. Our work is inspired by approaches such as:
+* "Consistency-based Early Exit": Generating multiple pathways and halting when consensus is reached. 
+* "Adaptive Computation Control for Efficient Reasoning": Utilizing secondary lightweight evaluators to stop generation.
+
+Unlike modifying transformer depth, our approach treats the LLM as a Black-Box generator. We apply a separate, distinct neural network (a PyTorch Multi-Layer Perceptron) that operates purely on the semantic representations (SentenceTransformer embeddings) of the generated natural language steps.
+
+--------------------------------------------------------------------------------
+
+3. DATASET DETAILS
+The project evaluates the controller's effectiveness on leading math-word reasoning datasets:
+* GSM8K (Grade School Math 8K): High-quality linguistically diverse grade school math word problems. Our models utilize the `main/train` split for generating the unconstrained offline reasoning traces used to train the controller. Evaluation is strictly performed on the `test` split.
+* MathQA: A large-scale advanced math dataset. Given deprecation issues with HuggingFace `trust_remote_code` loading scripts, offline fallbacks using pure JSON offline dumps (`data/math_qa_test.json`) were implemented to ensure dataset accessibility across Kaggle environments.
+* Future extensibility datasets include SVAMP, StrategyQA, and HotpotQA.
+
+--------------------------------------------------------------------------------
+
+4. PROPOSED METHODOLOGY / ARCHITECTURE
+The architecture is divided into two distinct sub-pipelines:
+
+Phase A: Unconstrained Baseline Generation (Offline)
+1. Black-Box LLM Wrapper: We wrap Qwen2.5-Math-7B-Instruct using Hugging Face pipelines `text-generation`.
+2. Step-wise Trace Generation: For each problem in the training set, the LLM generates a solution step-by-step (e.g., 20 tokens per step up to a maximum of 60 steps).
+3. Intermediate Verification: At each step, a robust regex-based extraction algorithm (`check_intermediate_correctness`) scans the cumulative text bounds for the known true target answer. If present, the step is labeled `True` (solved), otherwise `False`. 
+4. The culmination of this phase is a comprehensive JSON dataset of step-by-step traces mapped to binary ground truths.
+
+Phase B: Controller Training & Online Inference
+1. Feature Extraction: We pass each step's cumulative text through a frozen `sentence-transformers/all-MiniLM-L6-v2` model to extract a dense 384-dimensional semantic embedding.
+2. Scalar Augmentation: We concatenate two scalar numbers: the current step index and the current step's token length. The resulting 386-dimensional feature vector is normalized using a fitted StandardScaler.
+3. MLP Controller: A multi-layer perceptron (386 -> 128 -> 64 -> 1) is trained via Binary Cross Entropy w/ Logits on these extracted features to predict step correctness.
+4. Inference Loop with Early Exit: During evaluation (test set), the Black-Box LLM generates tokens. After each step, the newly formed context is instantly embedded and graded by the MLP Controller. 
+5. Answer Verification Protocol: If the controller outputs a probability ≥ threshold (e.g., 85%), it doesn't just recklessly exit. It utilizes a `has_clear_answer` helper function to structurally verify that the LLM has explicitly finalized the format (e.g., `\boxed{X}` or "The final answer is X"). If it hasn't, the controller forces the LLM to continue generating until the final answer is explicitly committed to text. Once confirmed, generation halts instantly.
+
+--------------------------------------------------------------------------------
+
+5. PROGRESS SO FAR
+Objectives Completed:
+* Defined scope, verified environment requirements (Week 1 / Phase 1).
+* Built HuggingFace LLM wrapper for Qwen.
+* Implemented the Step-by-Step reasoning trace generation script with complex true-answer substring extraction for Math QA and GSM8K.
+* Extracted semantic embeddings and trained the PyTorch MLP controller over historical true/false binary labels (Weeks 3-4 / Phase 2).
+* Built a rigorous Evaluation Pipeline measuring dataset-specific token savings versus empirical average maximums (Phase 5).
+* Implemented fail-safe Kaggle offline data-loading workarounds.
+* Upgraded extraction logic to prioritize mathematical bounding (`\boxed{}`) over naive string suffix matches to combat false positives in post-answer LLM reflections.
+* Upgraded the Early Exit Condition to ensure the Controller forces the LLM to structurally complete the answer formatting string before cutting off generation (to ensure correct parsing).
+
+Ongoing:
+* Phase 5 (Evaluation & Reporting): Running massive final tests across varying thresholds on `math_qa` and `gsm8k` test sets. Currently analyzing the precise degradation of Accuracy vs percentage of Tokens Saved. 
+
+Planned:
+* Phase 3 (Week 5): Difficulty-Aware Static Budgeting baseline comparisons.
+* Phase 4 (Week 6): Explore Consistency-Based Early Exit (self-consistency prompting vs our trained MLP approach).
+
+--------------------------------------------------------------------------------
+
+6. TENTATIVE TIMELINE
+* Week 1-2: Setup Qwen infrastructure locally; complete large offline generation of reasoning traces (Completed).
+* Week 3-4: Feature engineering (MiniLM embeddings + scalars) and MLP optimization/training (Completed).
+* Week 5-6: Refine Early-Exit extraction logic safely across datasets; Baseline Comparisons against fixed baseline budgets (Completed).
+* Week 7-8: Final massive test set execution on Kaggle GPUs. Collate Results. (Ongoing). Analyze final relationship between Compute Savings (%) and Accuracy Drop (%). Compile Final PDF Document.
