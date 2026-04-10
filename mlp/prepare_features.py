@@ -1,3 +1,5 @@
+import sys, os
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import json
 import torch
 import numpy as np
@@ -7,7 +9,7 @@ import os
 import argparse
 
 try:
-    from strategies.advanced_features import extract_advanced_features
+    from mlp.advanced_features import extract_advanced_features
 except ImportError:
     # Handle gracefully if the file isn't available
     pass

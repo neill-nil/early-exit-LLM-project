@@ -5,7 +5,6 @@ from tqdm import tqdm
 from datasets import load_dataset
 from models.llm_wrapper import HuggingFaceLLMWrapper
 from early_exit_inference import EarlyExitPipeline
-<<<<<<< HEAD
 from main_generate_traces import get_question, get_true_answer
 
 def compute_dynamic_baseline(dataset_identifiers: list, default_baseline: float) -> float:
@@ -64,9 +63,24 @@ def _check_math_qa_correctness(extracted_ans: str, true_ans: str) -> bool:
         return _regex_check(extracted_ans, value)
         
     return _regex_check(extracted_ans, true_ans)
-=======
-from main_generate_traces import get_question, get_true_answer, check_intermediate_correctness_llm as check_intermediate_correctness
->>>>>>> origin/dev-consistency-work
+
+def check_boolean_answer(extracted_ans: str, true_ans: str) -> bool:
+    """Check if extracted answer matches the true boolean answer."""
+    extracted = extracted_ans.strip().lower()
+    true = true_ans.strip().lower()
+
+    if extracted == true:
+        return True
+
+    yes_set = {"yes", "true"}
+    no_set = {"no", "false"}
+
+    if extracted in yes_set and true in yes_set:
+        return True
+    if extracted in no_set and true in no_set:
+        return True
+
+    return False
 
 def get_few_shot_prompt(dataset_name):
     dataset_lower = dataset_name.lower()
@@ -145,14 +159,11 @@ def evaluate_on_dataset(pipeline, dataset_name, split="test", num_samples=20, st
         else:
             dataset = dataset.select(range(min(num_samples, len(dataset))))
 
-<<<<<<< HEAD
     if dataset_name == "math_qa":
         # Taking samples from start_idx to avoid training overlap
         dataset = dataset.select(range(start_idx, start_idx + num_samples))
     else:
         dataset = dataset.select(range(start_idx, min(start_idx + num_samples, len(dataset))))
-=======
->>>>>>> origin/dev-consistency-work
     prompt_template = get_few_shot_prompt(dataset_name)
     
     results = []
@@ -163,22 +174,21 @@ def evaluate_on_dataset(pipeline, dataset_name, split="test", num_samples=20, st
     for idx, item in enumerate(tqdm(dataset)):
         question = get_question(item, dataset_name)
         true_ans = get_true_answer(item, dataset_name).strip().lower()
-        prompt = prompt_template.format(question=question)
+        
+        if "strategy" in dataset_name.lower():
+            from main_generate_traces import get_few_shot_prompt_strategyqa
+            prompt = get_few_shot_prompt_strategyqa(question, pipeline.llm)
+        else:
+            prompt = prompt_template.format(question=question)
         
         MAX_STEPS = 60
         STEP_TOKENS = 40
         
         # We assume a dataset-specific average baseline derived from the unconstrained training traces
         if "gsm8k" in dataset_name.lower():
-<<<<<<< HEAD
             baseline_tokens = compute_dynamic_baseline(["gsm8k"], 387.4)
         elif "math_qa" in dataset_name.lower():
             baseline_tokens = compute_dynamic_baseline(["math_qa"], 523.9)
-=======
-            baseline_tokens = 386.0  # Empirical average from GSM8K traces
-        elif "math_qa" in dataset_name.lower():
-            baseline_tokens = 500.0  # Empirical average from MathQA traces
->>>>>>> origin/dev-consistency-work
         else:
             baseline_tokens = 600.0  # Fallback
             
@@ -190,7 +200,8 @@ def evaluate_on_dataset(pipeline, dataset_name, split="test", num_samples=20, st
         # ── Check correctness (dataset-aware) ─────────────────────────────
         if true_ans == "":
             is_correct = False
-<<<<<<< HEAD
+        elif "strategy" in dataset_name.lower():
+            is_correct = check_boolean_answer(extracted_ans, true_ans)
         elif "math_qa" in dataset_name.lower():
             # Extract both letter and value to verify correctness rigorously
             is_correct = _check_math_qa_correctness(extracted_ans, true_ans)
@@ -199,8 +210,6 @@ def evaluate_on_dataset(pipeline, dataset_name, split="test", num_samples=20, st
         else:
             # Word-boundary regex check to avoid "60" matching "600"
             is_correct = _regex_check(extracted_ans, true_ans)
-=======
->>>>>>> origin/dev-consistency-work
 
         elif "math_qa" in dataset_name.lower():
             # get_true_answer returns "option c (value: 24)" for MathQA.
@@ -269,17 +278,22 @@ if __name__ == "__main__":
     parser.add_argument("--consistency-threshold", type=int, default=2, help="Consecutive stable answers before exit (consistency only)")
     parser.add_argument("--judge-model", type=str, default="Qwen/Qwen2.5-3B-Instruct",      help="HF model name for the judge (consistency only)")
     # Shared arguments
-    parser.add_argument("--dataset",    type=str, default="all", choices=["all", "gsm8k", "math_qa"], help="Dataset to evaluate")
+    parser.add_argument("--dataset",    type=str, default="all", choices=["all", "gsm8k", "math_qa", "strategy_qa"], help="Dataset to evaluate")
     parser.add_argument("--num_samples", type=int, default=25,                               help="Number of test samples")
     parser.add_argument("--start", type=int, default=0, help="Start index (use 300 for math_qa if you want to skip trace overlap blindly).")
     args = parser.parse_args()
 
-    print("Initializing Qwen2.5-Math-7B-Instruct (reasoner)...")
-    wrapper = HuggingFaceLLMWrapper(model_name="Qwen/Qwen2.5-Math-7B-Instruct")
+    # Determine wrapper logic
+    if args.dataset == "strategy_qa":
+        print("Initializing OLMo-3-7B-Think for StrategyQA evaluation...")
+        wrapper = HuggingFaceLLMWrapper(model_name="allenai/OLMo-3-7B-Think")
+    else:
+        print("Initializing Qwen2.5-Math-7B-Instruct (reasoner)...")
+        wrapper = HuggingFaceLLMWrapper(model_name="Qwen/Qwen2.5-Math-7B-Instruct")
 
     # ── Build the selected strategy ──────────────────────────────────────────
     if args.strategy == "mlp":
-        from strategies.learning_based import LearningBasedController
+        from mlp.controller import LearningBasedController
         print(f"Strategy: MLP (threshold={args.threshold})")
         strategy = LearningBasedController(
             controller_path=args.controller,
@@ -287,7 +301,7 @@ if __name__ == "__main__":
             threshold=args.threshold,
         )
     else:  # consistency
-        from strategies.consistency import ConsistencyController
+        from consistency.controller import ConsistencyController
         print(f"Strategy: Consistency (threshold={args.consistency_threshold}, judge={args.judge_model})")
         judge_wrapper = HuggingFaceLLMWrapper(model_name=args.judge_model)
         strategy = ConsistencyController(
@@ -299,7 +313,6 @@ if __name__ == "__main__":
     pipeline = EarlyExitPipeline(wrapper, strategy=strategy)
 
     if args.dataset in ["all", "gsm8k"]:
-<<<<<<< HEAD
         evaluate_on_dataset(pipeline, "gsm8k", split="test", num_samples=args.num_samples, start_idx=args.start)
     
     if args.dataset in ["all", "math_qa"]:
@@ -307,10 +320,7 @@ if __name__ == "__main__":
         # Default start array fallback applied to 600 if math_qa is used and start is left at 0 to avoid training overlap
         actual_start = args.start if args.start > 0 else 600
         evaluate_on_dataset(pipeline, "math_qa", split="train", num_samples=args.num_samples, start_idx=actual_start)
-=======
-        evaluate_on_dataset(pipeline, "gsm8k", split="test", num_samples=args.num_samples)
-
-    if args.dataset in ["all", "math_qa"]:
-        # math_qa: evaluate on an unseen train slice to avoid training overlap
-        evaluate_on_dataset(pipeline, "math_qa", split="train", num_samples=args.num_samples)
->>>>>>> origin/dev-consistency-work
+        
+    if args.dataset in ["all", "strategy_qa"]:
+        actual_start = args.start if args.start > 0 else 600
+        evaluate_on_dataset(pipeline, "ChilleD/StrategyQA", split="train", num_samples=args.num_samples, start_idx=actual_start)

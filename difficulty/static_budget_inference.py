@@ -1,7 +1,9 @@
+import sys, os
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import torch
 from models.llm_wrapper import HuggingFaceLLMWrapper
 from early_exit_inference import EarlyExitPipeline
-from strategies.static_budget import StaticBudgetController
+from difficulty.static_budget import StaticBudgetController
 
 class StaticBudgetPipeline(EarlyExitPipeline):
     def __init__(self, llm_wrapper, controller_path="models/static_classifier.pkl"):

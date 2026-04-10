@@ -75,7 +75,7 @@ class LearningBasedController(EarlyExitStrategy):
             scalar_features = [step_idx, current_step_tokens]
 
             if len(self.mean_scalars) > 2:
-                from strategies.advanced_features import extract_advanced_features
+                from mlp.advanced_features import extract_advanced_features
                 step_dict = {
                     "text_added": step_info.get("step_text", ""),
                     "cumulative_text": current_output,

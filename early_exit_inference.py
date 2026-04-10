@@ -1,5 +1,5 @@
 import re
-from strategies.base import EarlyExitStrategy
+from utils.base_strategy import EarlyExitStrategy
 
 
 class EarlyExitPipeline:
@@ -195,7 +195,7 @@ if __name__ == "__main__":
     print(
         "EarlyExitPipeline loaded successfully.\n"
         "Initialise with a strategy:\n"
-        "  from strategies.learning_based import LearningBasedController\n"
+        "  from mlp.controller import LearningBasedController\n"
         "  from strategies.consistency    import ConsistencyController\n"
         "  pipeline = EarlyExitPipeline(wrapper, strategy=LearningBasedController(...))\n"
         "  pipeline = EarlyExitPipeline(wrapper, strategy=ConsistencyController(judge_wrapper))"

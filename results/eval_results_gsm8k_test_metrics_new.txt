@@ -1,10 +1,10 @@
 =======================================================
   EVALUATION METRICS: GSM8K (test)
 =======================================================
-  Total Samples        : 60
-  Correct Answers      : 59
-  Accuracy             : 98.33%
-  Avg Baseline Tokens  : 386.0
-  Avg Tokens Used      : 323.2
-  Token Savings        : 16.27%
+  Total Samples        : 100
+  Correct Answers      : 90
+  Accuracy             : 90.00%
+  Avg Baseline Tokens  : 387.4
+  Avg Tokens Used      : 313.9
+  Token Savings        : 18.99%
 =======================================================

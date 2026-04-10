@@ -1,7 +1,7 @@
 import argparse
-from strategies.learning_based import LearningBasedController
-from strategies.static_budget import StaticBudgetController
-from strategies.consistency import ConsistencyController
+from mlp.controller import LearningBasedController
+from difficulty.static_budget import StaticBudgetController
+from consistency.controller import ConsistencyController
 
 def main():
     parser = argparse.ArgumentParser(description="Adaptive Early-Exit Strategies for LLMs")

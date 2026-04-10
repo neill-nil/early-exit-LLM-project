@@ -63,6 +63,33 @@ def get_true_answer(item, dataset_name: str) -> str:
             return str(item[col])
     return ""
 
+def get_few_shot_prompt_strategyqa(question: str, model_wrapper: HuggingFaceLLMWrapper) -> str:
+    """Build the prompt for OLMo-3-7B-Think using its chat template."""
+    system_message = (
+        "You are a helpful reasoning assistant. Think through the question step by step, "
+        "then provide your final answer as either 'Yes' or 'No'."
+    )
+    user_message = (
+        "Answer the following yes/no question by reasoning step-by-step.\n"
+        "After your reasoning, clearly state your final answer as 'Yes' or 'No'.\n\n"
+        "Example:\n"
+        "Question: Do hamsters provide food for any animals?\n"
+        "Answer: Hamsters are prey animals. Many predators, such as hawks, owls, and snakes, "
+        "hunt and eat hamsters in the wild. Therefore, hamsters do provide food for other animals. "
+        "The answer is Yes.\n\n"
+        f"Question: {question}\n"
+        "Answer:"
+    )
+    messages = [
+        {"role": "system", "content": system_message},
+        {"role": "user", "content": user_message},
+    ]
+    formatted = model_wrapper.tokenizer.apply_chat_template(
+        messages, tokenize=False, add_generation_prompt=True
+    )
+    return formatted
+
+
 
 
 def check_intermediate_correctness_llm(text: str, true_answer: str, question: str, judge_wrapper: HuggingFaceLLMWrapper, dataset_name: str = "") -> bool:
@@ -96,6 +123,33 @@ def check_intermediate_correctness_llm(text: str, true_answer: str, question: st
     Task: Has the student explicitly arrived at and written down the correct option letter, OR the correct numerical value as their FINAL conclusion?
     - If the student just calculated the value during an intermediate step without finalizing the problem, output NO.
     - If the student clearly concludes their work and explicitly states the correct option or final value, output YES.
+
+    Respond with exactly and ONLY the word "YES" or "NO". Do not explain.
+    """
+    elif 'strategy' in dataset_name.lower():
+        # Fast path 1
+        answer_variants = {true_ans_str}
+        if true_ans_str == "yes": answer_variants.update(["yes", "true"])
+        elif true_ans_str == "no": answer_variants.update(["no", "false"])
+        
+        if not any(variant in text_lower for variant in answer_variants):
+            return False
+            
+        # Fast path 2
+        if f"the answer is {true_ans_str}" in text_lower or f"'{true_ans_str}'" in text_lower:
+            return True
+            
+        prompt = f"""You are a reasoning grader for a yes/no question.
+
+    Question: {question}
+    Correct Final Answer: {true_answer}
+
+    Student's text:
+    \"\"\"{text}\"\"\"
+
+    Task: Does the student's text conclude with the correct answer "{true_answer}"?
+    - If the student explicitly states the correct answer "{true_answer}", or concludes their thought with it, output YES.
+    - Output NO otherwise.
 
     Respond with exactly and ONLY the word "YES" or "NO". Do not explain.
     """
